@@ -112,6 +112,12 @@ package spatz_pkg;
   // Instruction ID
   typedef logic [$clog2(NrParallelInstructions)-1:0] spatz_id_t;
 
+  // Ventaglio internal wide datapath
+  // By default, Ventaglio supports 4x scatter/gather
+  localparam int unsigned VENTAGLIO_WFACTOR = `ifdef VENTAGLIO_WFACTOR `VENTAGLIO_WFACTOR `else 4 `endif;
+  typedef logic [VENTAGLIO_WFACTOR*N_FU*ELENB-1:0] ventaglio_be_t;
+  typedef logic [VENTAGLIO_WFACTOR*N_FU*ELEN-1:0]  ventaglio_data_t;
+
   /////////////////////
   // Operation Types //
   /////////////////////
