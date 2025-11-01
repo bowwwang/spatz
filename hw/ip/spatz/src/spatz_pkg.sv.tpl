@@ -112,11 +112,6 @@ package spatz_pkg;
   // Instruction ID
   typedef logic [$clog2(NrParallelInstructions)-1:0] spatz_id_t;
 
-  // Ventaglio internal wide datapath
-  // By default, Ventaglio supports 4x scatter/gather
-  localparam int unsigned VENTAGLIO_WFACTOR = `ifdef VENTAGLIO_WFACTOR `VENTAGLIO_WFACTOR `else 4 `endif;
-  typedef logic [VENTAGLIO_WFACTOR*N_FU*ELENB-1:0] ventaglio_be_t;
-  typedef logic [VENTAGLIO_WFACTOR*N_FU*ELEN-1:0]  ventaglio_data_t;
 
   /////////////////////
   // Operation Types //
@@ -469,5 +464,58 @@ package spatz_pkg;
     widen_fp8_to_fp16.exponent = operand.exponent;
     widen_fp8_to_fp16.mantissa = {operand.mantissa, 8'b0};
   endfunction
+
+
+  //////////////////////////////
+  // Ventaglio Configurations //
+  //////////////////////////////
+
+  // Ventaglio internal wide datapath
+  // By default, Ventaglio supports 4x scatter/gather
+  localparam int unsigned VENTAGLIO_WFACTOR     = `ifdef VENTAGLIO_WFACTOR `VENTAGLIO_WFACTOR `else 4 `endif;
+  // Buffer size in bit. By default: 4096 (4K-bit)
+  localparam int unsigned VENTAGLIO_BUFFER_SIZE = `ifdef VENTAGLIO_BUFFER_SIZE `VENTAGLIO_BUFFER_SIZE `else 4096 `endif;
+  typedef logic [VENTAGLIO_WFACTOR*N_FU*ELENB-1:0] ventaglio_be_t;
+  typedef logic [VENTAGLIO_WFACTOR*N_FU*ELEN-1:0]  ventaglio_data_t;
+
+  // Buffer related 
+  // | ------------------------------ Buffer ------------------------------- |
+  // | --- Channel --- | --- Channel --- | --- Channel --- | --- Channel --- |
+  // | -Bank- | -Bank- | -Bank- | -Bank- | -Bank- | -Bank- | -Bank- | -Bank- |
+
+  // Representing the maximum asymetrical bandwidth ratio 
+  // 1:4 --> 4, 1:2 --> 2, by default we support 1:4
+  localparam int unsigned VTGNrChannels        = VENTAGLIO_WFACTOR;
+  localparam int unsigned VTGNrBanksPerChannel = N_FU;
+  // number of read ports, by default: 1
+  localparam int unsigned VTGNrReadPortsPerBank = 1;
+  // Width of a VTG Channel (bit)
+  localparam int unsigned VTGChannelWidth     = VTGNrBanksPerChannel * ELEN;
+  // Width of a VTG Channel (bytes)
+  localparam int unsigned VTGChannelBWidth    = VTGNrBanksPerChannel * ELENB;
+  // Number of rows per VTG Bank
+  localparam int unsigned VTGNrWordsPerBanks  = VENTAGLIO_BUFFER_SIZE / (VTGNrChannels * VTGChannelWidth);
+
+  // Enable Configuration
+  // The gather and scatter datapath can be activated individually
+  typedef enum logic [1:0] {
+    VTG_IDLE,
+    VTG_GATHER,
+    VTG_SCATTER,
+    VTG_GA_SC
+  } vtg_mode_e;
+
+  typedef enum logic [1:0] {
+    VTG_N1_M2,
+    VTG_N2_M4,
+    VTG_N1_M4
+  } vtg_ratio_e;
+
+  typedef enum int unsigned {
+    EW8  = 8,
+    EW16 = 16,
+    EW32 = 32
+  } vtg_elemw_e;
+
 
 endpackage : spatz_pkg
