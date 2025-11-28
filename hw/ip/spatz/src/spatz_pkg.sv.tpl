@@ -174,6 +174,7 @@ package spatz_pkg;
     logic set_vstart;
     logic clear_vstart;
     logic reset_vstart;
+    logic vleforward;
   } op_cfg_t;
 
   typedef struct packed {
@@ -475,8 +476,13 @@ package spatz_pkg;
   localparam int unsigned VENTAGLIO_WFACTOR     = `ifdef VENTAGLIO_WFACTOR `VENTAGLIO_WFACTOR `else 4 `endif;
   // Buffer size in bit. By default: 4096 (4K-bit)
   localparam int unsigned VENTAGLIO_BUFFER_SIZE = `ifdef VENTAGLIO_BUFFER_SIZE `VENTAGLIO_BUFFER_SIZE `else 4096 `endif;
-  typedef logic [VENTAGLIO_WFACTOR*N_FU*ELENB-1:0] ventaglio_be_t;
-  typedef logic [VENTAGLIO_WFACTOR*N_FU*ELEN-1:0]  ventaglio_data_t;
+
+  // wide datapath
+  typedef logic [VENTAGLIO_WFACTOR*N_FU*ELENB-1:0] ventaglio_wide_be_t;
+  typedef logic [VENTAGLIO_WFACTOR*N_FU*ELEN-1:0]  ventaglio_wide_data_t;
+  // narrow datapath
+  typedef logic                   [N_FU*ELENB-1:0] ventaglio_narrow_be_t;
+  typedef logic                   [N_FU*ELEN-1:0]  ventaglio_narrow_data_t;
 
   // Buffer related 
   // | ------------------------------ Buffer ------------------------------- |
@@ -493,8 +499,8 @@ package spatz_pkg;
   localparam int unsigned VTGChannelWidth     = VTGNrBanksPerChannel * ELEN;
   // Width of a VTG Channel (bytes)
   localparam int unsigned VTGChannelBWidth    = VTGNrBanksPerChannel * ELENB;
-  // Number of rows per VTG Bank
-  localparam int unsigned VTGNrWordsPerBanks  = VENTAGLIO_BUFFER_SIZE / (VTGNrChannels * VTGChannelWidth);
+  // Number of rows per VTG Channel
+  localparam int unsigned VTGNrWordsPerChannel  = VENTAGLIO_BUFFER_SIZE / (VTGNrChannels * VTGChannelWidth);
 
   // Enable Configuration
   // The gather and scatter datapath can be activated individually

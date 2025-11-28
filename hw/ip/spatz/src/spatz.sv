@@ -190,11 +190,25 @@ module spatz import spatz_pkg::*; import rvv_pkg::*; import fpnew_pkg::*; #(
   logic      [NrWritePorts-1:0] vrf_we;
   vrf_be_t   [NrWritePorts-1:0] vrf_wbe;
   logic      [NrWritePorts-1:0] vrf_wvalid;
+  logic      [NrWritePorts-1:0] vrf_vlefw_write; //VLE forward write signal (yx)
   // Read ports
   vrf_addr_t [NrReadPorts-1:0]  vrf_raddr;
   logic      [NrReadPorts-1:0]  vrf_re;
   vrf_data_t [NrReadPorts-1:0]  vrf_rdata;
   logic      [NrReadPorts-1:0]  vrf_rvalid;
+  logic      [NrReadPorts-1:0]  vrf_vlefw_read; //VLE forward read signal (yx)
+
+  // VTL-VRF forwarding path
+  vrf_addr_t                    vrf_vtl_waddr;
+  vrf_data_t                    vrf_vtl_wdata;
+  logic                         vrf_vtl_we;
+  vrf_be_t                      vrf_vtl_wbe;
+  logic                         vrf_vtl_wvalid;
+  // Read ports
+  vrf_addr_t                    vrf_vtl_raddr;
+  logic                         vrf_vtl_re;
+  vrf_data_t                    vrf_vtl_rdata;
+  logic                         vrf_vtl_rvalid;
 
   spatz_vrf #(
     .NrReadPorts (NrReadPorts ),
@@ -204,16 +218,30 @@ module spatz import spatz_pkg::*; import rvv_pkg::*; import fpnew_pkg::*; #(
     .rst_ni    (rst_ni    ),
     .testmode_i(testmode_i),
     // Write Ports
-    .waddr_i   (vrf_waddr ),
-    .wdata_i   (vrf_wdata ),
-    .we_i      (vrf_we    ),
-    .wbe_i     (vrf_wbe   ),
-    .wvalid_o  (vrf_wvalid),
+    .waddr_i        (vrf_waddr ),
+    .wdata_i        (vrf_wdata ),
+    .we_i           (vrf_we    ),
+    .wbe_i          (vrf_wbe   ),
+    .wvalid_o       (vrf_wvalid),
+    .vlefw_write_i  (vrf_vlefw_write), // VLE Forward write signal (yx)
     // Read Ports
-    .raddr_i   (vrf_raddr ),
-    .re_i      (vrf_re    ),
-    .rdata_o   (vrf_rdata ),
-    .rvalid_o  (vrf_rvalid)
+    .raddr_i        (vrf_raddr ),
+    .re_i           (vrf_re    ),
+    .rdata_o        (vrf_rdata ),
+    .rvalid_o       (vrf_rvalid),
+    .vlefw_read_i   (vrf_vlefw_read),  // VLE Forward read signal (yx)
+    // master ports to VTL
+    // write ports
+    .waddr_o        (vrf_vtl_waddr),
+    .wdata_o        (vrf_vtl_wdata),
+    .we_o           (vrf_vtl_we),
+    .wbe_o          (vrf_vtl_wbe),
+    .wvalid_i       (vrf_vtl_wvalid),
+    // read ports
+    .raddr_o        (vrf_vtl_raddr),
+    .re_o           (vrf_vtl_re),
+    .rdata_i        (vrf_vtl_rdata),
+    .rvalid_i       (vrf_vtl_rvalid)
   );
 
   ////////////////
@@ -266,7 +294,9 @@ module spatz import spatz_pkg::*; import rvv_pkg::*; import fpnew_pkg::*; #(
     .sb_id_i          (sb_id           ),
     .sb_wrote_result_i(vrf_wvalid      ),
     .sb_enable_i      ({sb_we, sb_re}  ),
-    .sb_enable_o      ({vrf_we, vrf_re})
+    .sb_enable_o      ({vrf_we, vrf_re}),
+    .sb_vlefw_read_o  (vrf_vlefw_read  ),
+    .sb_vlefw_write_o (vrf_vlefw_write )
   );
 
   /////////
@@ -340,6 +370,32 @@ module spatz import spatz_pkg::*; import rvv_pkg::*; import fpnew_pkg::*; #(
     .spatz_mem_finished_o    (spatz_mem_finished                                   ),
     .spatz_mem_str_finished_o(spatz_mem_str_finished                               )
   );
+
+  /////////
+  // VTL //
+  /////////
+
+  ventaglio #(
+    .NarrowDataWidth  (VRFWordWidth ),
+    .WideDataWidth    (VRFWordWidth * VENTAGLIO_WFACTOR)
+  ) i_vtl (
+    .clk_i            (clk_i             ),
+    .rst_ni           (rst_ni            ),
+    .testmode_i       (testmode_i        ),
+
+    // slave ports from VRF
+    .waddr_i          (vrf_vtl_waddr     ),
+    .wdata_i          (vrf_vtl_wdata     ),
+    .we_i             (vrf_vtl_we        ),
+    .wbe_i            (vrf_vtl_wbe       ),
+    .wvalid_o         (vrf_vtl_wvalid    ),
+
+    .raddr_i          (vrf_vtl_raddr     ),
+    .re_i             (vrf_vtl_re        ),
+    .rdata_o          (vrf_vtl_rdata     ),
+    .rvalid_o         (vrf_vtl_rvalid    )
+  );
+
 
   ///////////
   // VSLDU //

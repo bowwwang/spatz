@@ -20,12 +20,25 @@ module spatz_vrf
     input  vrf_data_t [NrWritePorts-1:0] wdata_i,
     input  logic      [NrWritePorts-1:0] we_i,
     input  vrf_be_t   [NrWritePorts-1:0] wbe_i,
+    input  logic      [NrWritePorts-1:0] vlefw_write_i,
     output logic      [NrWritePorts-1:0] wvalid_o,
     // Read ports
     input  vrf_addr_t [NrReadPorts-1:0]  raddr_i,
     input  logic      [NrReadPorts-1:0]  re_i,
+    input  logic      [NrReadPorts-1:0]  vlefw_read_i,
     output vrf_data_t [NrReadPorts-1:0]  rdata_o,
-    output logic      [NrReadPorts-1:0]  rvalid_o
+    output logic      [NrReadPorts-1:0]  rvalid_o,
+    // Write master ports to VTL
+    output vrf_addr_t                    waddr_o,
+    output vrf_data_t                    wdata_o,
+    output logic                         we_o,
+    output vrf_be_t                      wbe_o,
+    input  logic                         wvalid_i,
+    // Read master ports to VTL
+    output vrf_addr_t                    raddr_o,
+    output logic                         re_o,
+    input  vrf_data_t                    rdata_i,
+    input  logic                         rvalid_i
   );
 
 `include "common_cells/registers.svh"
@@ -42,6 +55,7 @@ module spatz_vrf
 
   typedef logic [$bits(vrf_addr_t)-$clog2(NrVRFBanks)-1:0] vregfile_addr_t;
 
+  // the word index within one bank
   function automatic logic [$clog2(NrWordsPerBank)-1:0] f_vreg(vrf_addr_t addr);
     f_vreg = addr[$clog2(NrVRFWords)-1:$clog2(NrVRFBanks)];
   endfunction: f_vreg
@@ -76,7 +90,8 @@ module spatz_vrf
   always_comb begin: gen_write_request
     for (int bank = 0; bank < NrVRFBanks; bank++) begin
       for (int port = 0; port < NrWritePorts; port++) begin
-        write_request[bank][port] = we_i[port] && f_bank(waddr_i[port]) == bank;
+        write_request[bank][port] = we_i[port] && f_bank(waddr_i[port]) == bank && (vlefw_write_i[port] != 1'b1);
+
       end
     end
   end: gen_write_request
@@ -87,6 +102,24 @@ module spatz_vrf
     we       = '0;
     wbe      = '0;
     wvalid_o = '0;
+
+    // signals for request VTL forwarding
+    waddr_o = '0;
+    wdata_o = '0;
+    we_o    =  0;
+    wbe_o   = '0;
+
+    for (int unsigned port = 0; port < NrWritePorts; port++) begin
+      // iteration all the write ports
+      // forward the write request to VTL 
+      if (vlefw_write_i[port] == 1'b1) begin
+        waddr_o        = waddr_i[port];
+        wdata_o        = wdata_i[port];
+        we_o           = we_i[port];
+        wbe_o          = wbe_i[port];
+        wvalid_o[port] = wvalid_i;
+      end
+    end
 
     // For each bank, we have a priority based access scheme. First priority always has the VFU,
     // second priority has the LSU, and third priority has the slide unit.
@@ -122,7 +155,7 @@ module spatz_vrf
   always_comb begin: gen_read_request
     for (int bank = 0; bank < NrVRFBanks; bank++) begin
       for (int port = 0; port < NrReadPorts; port++) begin
-        read_request[bank][port] = re_i[port] && f_bank(raddr_i[port]) == bank;
+        read_request[bank][port] = re_i[port] && f_bank(raddr_i[port]) == bank && (vlefw_read_i[port] != 1'b1);
       end
     end
   end: gen_read_request
@@ -131,6 +164,21 @@ module spatz_vrf
     raddr    = '0;
     rvalid_o = '0;
     rdata_o  = 'x;
+
+    // signals for request VTL forwarding
+    raddr_o  = '0;
+    re_o     =  0;
+
+    for (int unsigned port = 0; port < NrReadPorts; port++) begin
+      // iteration all the read ports
+      // forward the read request to VTL 
+      if (vlefw_read_i[port] == 1'b1) begin
+        raddr_o        = raddr_i[port];
+        re_o           = re_i[port];
+        rdata_o[port]  = rdata_i;
+        rvalid_o[port] = rvalid_i;
+      end
+    end
 
     // For each port or each bank we have a priority based access scheme.
     // Port zero can only be accessed by the VFU (vs2). Port one can be accessed by
