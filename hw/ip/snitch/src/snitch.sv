@@ -782,7 +782,11 @@ module snitch import snitch_pkg::*; import riscv_instr::*; #(
           riscv_instr::CSR_VXSAT,
           riscv_instr::CSR_VXRM,
           riscv_instr::CSR_VCSR,
-          riscv_instr::CSR_VLEFORWARD: begin
+          riscv_instr::CSR_VLEFORWARD,
+          riscv_instr::CSR_VTLIDXW,
+          riscv_instr::CSR_VTLBLKS,
+          riscv_instr::CSR_VTLRATIO,
+          riscv_instr::CSR_VTLREG: begin
             if (RVV) begin
               write_rd        = 1'b0;
               uses_rd         = rd != 0;
@@ -813,7 +817,11 @@ module snitch import snitch_pkg::*; import riscv_instr::*; #(
           riscv_instr::CSR_VXSAT,
           riscv_instr::CSR_VXRM,
           riscv_instr::CSR_VCSR,
-          riscv_instr::CSR_VLEFORWARD: begin
+          riscv_instr::CSR_VLEFORWARD,
+          riscv_instr::CSR_VTLIDXW,
+          riscv_instr::CSR_VTLBLKS,
+          riscv_instr::CSR_VTLRATIO,
+          riscv_instr::CSR_VTLREG: begin
             if (RVV) begin
               write_rd        = 1'b0;
               uses_rd         = rd != 0;
@@ -843,7 +851,11 @@ module snitch import snitch_pkg::*; import riscv_instr::*; #(
           riscv_instr::CSR_VXSAT,
           riscv_instr::CSR_VXRM,
           riscv_instr::CSR_VCSR,
-          riscv_instr::CSR_VLEFORWARD: begin
+          riscv_instr::CSR_VLEFORWARD,
+          riscv_instr::CSR_VTLIDXW,
+          riscv_instr::CSR_VTLBLKS,
+          riscv_instr::CSR_VTLRATIO,
+          riscv_instr::CSR_VTLREG: begin
             if (RVV) begin
               write_rd        = 1'b0;
               uses_rd         = 1'b1;
@@ -875,7 +887,11 @@ module snitch import snitch_pkg::*; import riscv_instr::*; #(
           riscv_instr::CSR_VXSAT,
           riscv_instr::CSR_VXRM,
           riscv_instr::CSR_VCSR,
-          riscv_instr::CSR_VLEFORWARD: begin
+          riscv_instr::CSR_VLEFORWARD,
+          riscv_instr::CSR_VTLIDXW,
+          riscv_instr::CSR_VTLBLKS,
+          riscv_instr::CSR_VTLRATIO,
+          riscv_instr::CSR_VTLREG: begin
             if (RVV) begin
               write_rd        = 1'b0;
               uses_rd         = 1'b1;
@@ -911,7 +927,11 @@ module snitch import snitch_pkg::*; import riscv_instr::*; #(
           riscv_instr::CSR_VXSAT,
           riscv_instr::CSR_VXRM,
           riscv_instr::CSR_VCSR,
-          riscv_instr::CSR_VLEFORWARD: begin
+          riscv_instr::CSR_VLEFORWARD,
+          riscv_instr::CSR_VTLIDXW,
+          riscv_instr::CSR_VTLBLKS,
+          riscv_instr::CSR_VTLRATIO,
+          riscv_instr::CSR_VTLREG: begin
             if (RVV) begin
               write_rd        = 1'b0;
               uses_rd         = 1'b1;
@@ -943,7 +963,11 @@ module snitch import snitch_pkg::*; import riscv_instr::*; #(
           riscv_instr::CSR_VXSAT,
           riscv_instr::CSR_VXRM,
           riscv_instr::CSR_VCSR,
-          riscv_instr::CSR_VLEFORWARD: begin
+          riscv_instr::CSR_VLEFORWARD,
+          riscv_instr::CSR_VTLIDXW,
+          riscv_instr::CSR_VTLBLKS,
+          riscv_instr::CSR_VTLRATIO,
+          riscv_instr::CSR_VTLREG: begin
             if (RVV) begin
               write_rd        = 1'b0;
               uses_rd         = 1'b1;
@@ -2527,6 +2551,7 @@ module snitch import snitch_pkg::*; import riscv_instr::*; #(
       riscv_instr::VFNMSUB_VF,
       riscv_instr::VFMACC_VF,
       riscv_instr::VFNMACC_VF,
+      riscv_instr::VFXMACC_VF,
       riscv_instr::VFMSAC_VF,
       riscv_instr::VFNMSAC_VF,
       riscv_instr::VFWADD_VF,
@@ -2552,6 +2577,10 @@ module snitch import snitch_pkg::*; import riscv_instr::*; #(
       riscv_instr::VLE16_V,
       riscv_instr::VLE32_V,
       riscv_instr::VLE64_V,
+      riscv_instr::VLX8_V,
+      riscv_instr::VLX16_V,
+      riscv_instr::VLX32_V,
+      riscv_instr::VLX64_V,
       riscv_instr::VLOXEI8_V,
       riscv_instr::VLOXEI16_V,
       riscv_instr::VLOXEI32_V,

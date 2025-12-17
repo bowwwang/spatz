@@ -7,6 +7,7 @@
 package spatz_pkg;
 
   import rvv_pkg::*;
+  import vtl_pkg::*;
 
   //////////////////
   //  Parameters  //
@@ -138,7 +139,7 @@ package spatz_pkg;
     // Slide instructions
     VSLIDEUP, VSLIDEDOWN,
     // Load instructions
-    VLE, VLSE, VLXE,
+    VLE, VLSE, VLXE, VLX,
     // Store instructions
     VSE, VSSE, VSXE,
     // Config instruction
@@ -149,7 +150,9 @@ package spatz_pkg;
     VFADD, VFSUB, VFMUL,
     VFMINMAX, VFSGNJ, VFCMP, VFCLASS,
     VF2I, VF2U, VI2F, VU2F, VF2F,
-    VFMADD, VFMSUB, VFNMSUB, VFNMADD, VSDOTP
+    VFMADD, VFMSUB, VFNMSUB, VFNMADD, VSDOTP,
+    // Indexed instructions
+    VFXMADD
   } op_e;
 
   // Execution units
@@ -175,6 +178,10 @@ package spatz_pkg;
     logic clear_vstart;
     logic reset_vstart;
     logic vleforward;
+    logic vtl_redirect;
+    logic set_vtl_index_width;
+    logic set_vtl_blk_size;
+    logic set_vtl_ratio;
   } op_cfg_t;
 
   typedef struct packed {
@@ -207,6 +214,35 @@ package spatz_pkg;
     logic insert;
     logic vmv;
   } op_sld_t;
+
+  typedef struct packed {
+    sp_idxw_e  sp_cfg_index_width;
+    sp_blk_e   sp_cfg_blk_size;
+    sp_ratio_e sp_cfg_ratio;
+  } sp_cfg_t;
+
+  typedef struct packed {
+    logic vm;
+
+    // general flag 
+    logic use_vtl; // if any operand go through VTL
+    logic is_load_idx;
+
+    logic gather_vs1; // are these signal necessary?
+    logic gather_vs2;
+    logic gather_vd;
+
+    logic scatter_vd;
+
+    // sparsity-related
+    //sp_idxw_e  idx_width;      // index width (in bit)
+    //sp_blk_e   blk_size;       // block size (m in n:m format)
+    //sp_ratio_e ratio;          // sparsity ratio
+
+    sp_cfg_t sp_cfg;
+
+
+  } op_vtl_t;
 
   // Result from decoder
   typedef struct packed {
@@ -246,6 +282,7 @@ package spatz_pkg;
     op_arith_t op_arith;
     op_mem_t op_mem;
     op_sld_t op_sld;
+    op_vtl_t op_vtl;
 
     // Spatz config details
     vtype_t vtype;
@@ -476,6 +513,7 @@ package spatz_pkg;
   localparam int unsigned VENTAGLIO_WFACTOR     = `ifdef VENTAGLIO_WFACTOR `VENTAGLIO_WFACTOR `else 4 `endif;
   // Buffer size in bit. By default: 4096 (4K-bit)
   localparam int unsigned VENTAGLIO_BUFFER_SIZE = `ifdef VENTAGLIO_BUFFER_SIZE `VENTAGLIO_BUFFER_SIZE `else 4096 `endif;
+  //localparam int unsigned VENTAGLIO_BUFFER_SIZE = `ifdef VENTAGLIO_BUFFER_SIZE `VENTAGLIO_BUFFER_SIZE `else 16384 `endif;
 
   // wide datapath
   typedef logic [VENTAGLIO_WFACTOR*N_FU*ELENB-1:0] ventaglio_wide_be_t;
@@ -522,6 +560,5 @@ package spatz_pkg;
     EW16 = 16,
     EW32 = 32
   } vtg_elemw_e;
-
 
 endpackage : spatz_pkg
