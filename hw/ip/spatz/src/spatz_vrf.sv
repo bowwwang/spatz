@@ -20,12 +20,12 @@ module spatz_vrf
     input  vrf_data_t [NrWritePorts-1:0] wdata_i,
     input  logic      [NrWritePorts-1:0] we_i,
     input  vrf_be_t   [NrWritePorts-1:0] wbe_i,
-    input  logic      [NrWritePorts-1:0] vlefw_write_i,
+    input  logic      [NrWritePorts-1:0] vtl_redirect_write_i,
     output logic      [NrWritePorts-1:0] wvalid_o,
     // Read ports
     input  vrf_addr_t [NrReadPorts-1:0]  raddr_i,
     input  logic      [NrReadPorts-1:0]  re_i,
-    input  logic      [NrReadPorts-1:0]  vlefw_read_i,
+    input  logic      [NrReadPorts-1:0]  vtl_redirect_read_i,
     output vrf_data_t [NrReadPorts-1:0]  rdata_o,
     output logic      [NrReadPorts-1:0]  rvalid_o,
     // Write master ports to VTL
@@ -34,11 +34,13 @@ module spatz_vrf
     output logic                         we_o,
     output vrf_be_t                      wbe_o,
     input  logic                         wvalid_i,
+    output logic                         wscatter_en_o,
     // Read master ports to VTL
     output vrf_addr_t                    raddr_o,
     output logic                         re_o,
     input  vrf_data_t                    rdata_i,
-    input  logic                         rvalid_i
+    input  logic                         rvalid_i,
+    output logic                         rgather_en_o
   );
 
 `include "common_cells/registers.svh"
@@ -90,7 +92,7 @@ module spatz_vrf
   always_comb begin: gen_write_request
     for (int bank = 0; bank < NrVRFBanks; bank++) begin
       for (int port = 0; port < NrWritePorts; port++) begin
-        write_request[bank][port] = we_i[port] && f_bank(waddr_i[port]) == bank && (vlefw_write_i[port] != 1'b1);
+        write_request[bank][port] = we_i[port] && f_bank(waddr_i[port]) == bank && (vtl_redirect_write_i[port] != 1'b1);
 
       end
     end
@@ -108,18 +110,27 @@ module spatz_vrf
     wdata_o = '0;
     we_o    =  0;
     wbe_o   = '0;
+    wscatter_en_o = 1'b0;
 
-    for (int unsigned port = 0; port < NrWritePorts; port++) begin
-      // iteration all the write ports
-      // forward the write request to VTL 
-      if (vlefw_write_i[port] == 1'b1) begin
-        waddr_o        = waddr_i[port];
-        wdata_o        = wdata_i[port];
-        we_o           = we_i[port];
-        wbe_o          = wbe_i[port];
-        wvalid_o[port] = wvalid_i;
-      end
+    // forward the write request to VTL 
+    // write requests from VFU has the highest priority
+    // no write request from VTL will be forwarded
+    if (vtl_redirect_write_i[VFU_VD_WD] == 1'b1) begin
+      waddr_o        = waddr_i[VFU_VD_WD];
+      wdata_o        = wdata_i[VFU_VD_WD];
+      we_o           = we_i[VFU_VD_WD];
+      wbe_o          = wbe_i[VFU_VD_WD];
+      wvalid_o[VFU_VD_WD] = wvalid_i;
+      wscatter_en_o  = 1'b1; // TODO (bowwang): we assume only write from VFU need scatter, which may not hold
+    end else if (vtl_redirect_write_i[VLSU_VD_WD] == 1'b1) begin
+      waddr_o        = waddr_i[VLSU_VD_WD];
+      wdata_o        = wdata_i[VLSU_VD_WD];
+      we_o           = we_i[VLSU_VD_WD];
+      wbe_o          = wbe_i[VLSU_VD_WD];
+      wvalid_o[VLSU_VD_WD] = wvalid_i;
+      wscatter_en_o  = 1'b0;
     end
+
 
     // For each bank, we have a priority based access scheme. First priority always has the VFU,
     // second priority has the LSU, and third priority has the slide unit.
@@ -155,7 +166,7 @@ module spatz_vrf
   always_comb begin: gen_read_request
     for (int bank = 0; bank < NrVRFBanks; bank++) begin
       for (int port = 0; port < NrReadPorts; port++) begin
-        read_request[bank][port] = re_i[port] && f_bank(raddr_i[port]) == bank && (vlefw_read_i[port] != 1'b1);
+        read_request[bank][port] = re_i[port] && f_bank(raddr_i[port]) == bank && (vtl_redirect_read_i[port] != 1'b1);
       end
     end
   end: gen_read_request
@@ -168,17 +179,42 @@ module spatz_vrf
     // signals for request VTL forwarding
     raddr_o  = '0;
     re_o     =  0;
+    rgather_en_o = 1'b0;
 
-    for (int unsigned port = 0; port < NrReadPorts; port++) begin
-      // iteration all the read ports
-      // forward the read request to VTL 
-      if (vlefw_read_i[port] == 1'b1) begin
-        raddr_o        = raddr_i[port];
-        re_o           = re_i[port];
-        rdata_o[port]  = rdata_i;
-        rvalid_o[port] = rvalid_i;
-      end
+    // forward the read request to VTL with priority
+    // TODO (bowwang): we assume only read from VFU need gather, which may not hold
+    if (vtl_redirect_read_i[VFU_VD_RD] == 1'b1) begin
+      raddr_o        = raddr_i[VFU_VD_RD];
+      re_o           = re_i[VFU_VD_RD];
+      rgather_en_o   = 1'b1;
+      rdata_o[VFU_VD_RD]  = rdata_i;
+      rvalid_o[VFU_VD_RD] = rvalid_i;
+    end else if (vtl_redirect_read_i[VFU_VS2_RD] == 1'b1) begin
+      raddr_o        = raddr_i[VFU_VS2_RD];
+      re_o           = re_i[VFU_VS2_RD];
+      rgather_en_o   = 1'b1;
+      rdata_o[VFU_VS2_RD]  = rdata_i;
+      rvalid_o[VFU_VS2_RD] = rvalid_i;
+    end else if (vtl_redirect_read_i[VFU_VS1_RD] == 1'b1) begin
+      raddr_o        = raddr_i[VFU_VS1_RD];
+      re_o           = re_i[VFU_VS1_RD];
+      rgather_en_o   = 1'b1;
+      rdata_o[VFU_VS1_RD]  = rdata_i;
+      rvalid_o[VFU_VS1_RD] = rvalid_i;
+    end else if (vtl_redirect_read_i[VLSU_VD_RD] == 1'b1) begin
+      raddr_o        = raddr_i[VLSU_VD_RD];
+      re_o           = re_i[VLSU_VD_RD];
+      rgather_en_o   = 1'b0;
+      rdata_o[VLSU_VD_RD]  = rdata_i;
+      rvalid_o[VLSU_VD_RD] = rvalid_i;
+    end else if (vtl_redirect_read_i[VLSU_VS2_RD] == 1'b1) begin
+      raddr_o        = raddr_i[VLSU_VS2_RD];
+      re_o           = re_i[VLSU_VS2_RD];
+      rgather_en_o   = 1'b0;
+      rdata_o[VLSU_VS2_RD]  = rdata_i;
+      rvalid_o[VLSU_VS2_RD] = rvalid_i;
     end
+
 
     // For each port or each bank we have a priority based access scheme.
     // Port zero can only be accessed by the VFU (vs2). Port one can be accessed by

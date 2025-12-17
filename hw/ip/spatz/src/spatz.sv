@@ -190,13 +190,13 @@ module spatz import spatz_pkg::*; import rvv_pkg::*; import fpnew_pkg::*; #(
   logic      [NrWritePorts-1:0] vrf_we;
   vrf_be_t   [NrWritePorts-1:0] vrf_wbe;
   logic      [NrWritePorts-1:0] vrf_wvalid;
-  logic      [NrWritePorts-1:0] vrf_vlefw_write; //VLE forward write signal (yx)
+  logic      [NrWritePorts-1:0] vrf_vtl_redirect_write;
   // Read ports
   vrf_addr_t [NrReadPorts-1:0]  vrf_raddr;
   logic      [NrReadPorts-1:0]  vrf_re;
   vrf_data_t [NrReadPorts-1:0]  vrf_rdata;
   logic      [NrReadPorts-1:0]  vrf_rvalid;
-  logic      [NrReadPorts-1:0]  vrf_vlefw_read; //VLE forward read signal (yx)
+  logic      [NrReadPorts-1:0]  vrf_vtl_redirect_read; 
 
   // VTL-VRF forwarding path
   vrf_addr_t                    vrf_vtl_waddr;
@@ -204,11 +204,13 @@ module spatz import spatz_pkg::*; import rvv_pkg::*; import fpnew_pkg::*; #(
   logic                         vrf_vtl_we;
   vrf_be_t                      vrf_vtl_wbe;
   logic                         vrf_vtl_wvalid;
+  logic                         vrf_vtl_wscatter_en;
   // Read ports
   vrf_addr_t                    vrf_vtl_raddr;
   logic                         vrf_vtl_re;
   vrf_data_t                    vrf_vtl_rdata;
   logic                         vrf_vtl_rvalid;
+  logic                         vrf_vtl_rgather_en;
 
   spatz_vrf #(
     .NrReadPorts (NrReadPorts ),
@@ -218,18 +220,18 @@ module spatz import spatz_pkg::*; import rvv_pkg::*; import fpnew_pkg::*; #(
     .rst_ni    (rst_ni    ),
     .testmode_i(testmode_i),
     // Write Ports
-    .waddr_i        (vrf_waddr ),
-    .wdata_i        (vrf_wdata ),
-    .we_i           (vrf_we    ),
-    .wbe_i          (vrf_wbe   ),
-    .wvalid_o       (vrf_wvalid),
-    .vlefw_write_i  (vrf_vlefw_write), // VLE Forward write signal (yx)
+    .waddr_i              (vrf_waddr ),
+    .wdata_i              (vrf_wdata ),
+    .we_i                 (vrf_we    ),
+    .wbe_i                (vrf_wbe   ),
+    .wvalid_o             (vrf_wvalid),
+    .vtl_redirect_write_i (vrf_vtl_redirect_write),
     // Read Ports
-    .raddr_i        (vrf_raddr ),
-    .re_i           (vrf_re    ),
-    .rdata_o        (vrf_rdata ),
-    .rvalid_o       (vrf_rvalid),
-    .vlefw_read_i   (vrf_vlefw_read),  // VLE Forward read signal (yx)
+    .raddr_i              (vrf_raddr ),
+    .re_i                 (vrf_re    ),
+    .rdata_o              (vrf_rdata ),
+    .rvalid_o             (vrf_rvalid),
+    .vtl_redirect_read_i  (vrf_vtl_redirect_read),
     // master ports to VTL
     // write ports
     .waddr_o        (vrf_vtl_waddr),
@@ -237,11 +239,13 @@ module spatz import spatz_pkg::*; import rvv_pkg::*; import fpnew_pkg::*; #(
     .we_o           (vrf_vtl_we),
     .wbe_o          (vrf_vtl_wbe),
     .wvalid_i       (vrf_vtl_wvalid),
+    .wscatter_en_o  (vrf_vtl_wscatter_en),
     // read ports
     .raddr_o        (vrf_vtl_raddr),
     .re_o           (vrf_vtl_re),
     .rdata_i        (vrf_vtl_rdata),
-    .rvalid_i       (vrf_vtl_rvalid)
+    .rvalid_i       (vrf_vtl_rvalid),
+    .rgather_en_o   (vrf_vtl_rgather_en)
   );
 
   ////////////////
@@ -295,8 +299,8 @@ module spatz import spatz_pkg::*; import rvv_pkg::*; import fpnew_pkg::*; #(
     .sb_wrote_result_i(vrf_wvalid      ),
     .sb_enable_i      ({sb_we, sb_re}  ),
     .sb_enable_o      ({vrf_we, vrf_re}),
-    .sb_vlefw_read_o  (vrf_vlefw_read  ),
-    .sb_vlefw_write_o (vrf_vlefw_write )
+    .sb_vtl_redirect_read_o  (vrf_vtl_redirect_read ), // bowwang: leverage the new op_vtl field
+    .sb_vtl_redirect_write_o (vrf_vtl_redirect_write)
   );
 
   /////////
@@ -356,11 +360,11 @@ module spatz import spatz_pkg::*; import rvv_pkg::*; import fpnew_pkg::*; #(
     .vrf_we_o                (sb_we[VLSU_VD_WD]                                    ),
     .vrf_wbe_o               (vrf_wbe[VLSU_VD_WD]                                  ),
     .vrf_wvalid_i            (vrf_wvalid[VLSU_VD_WD]                               ),
-    .vrf_raddr_o             (vrf_raddr[VLSU_VD_RD:VLSU_VS2_RD]                    ),
-    .vrf_re_o                (sb_re[VLSU_VD_RD:VLSU_VS2_RD]                        ),
-    .vrf_rdata_i             (vrf_rdata[VLSU_VD_RD:VLSU_VS2_RD]                    ),
-    .vrf_rvalid_i            (vrf_rvalid[VLSU_VD_RD:VLSU_VS2_RD]                   ),
-    .vrf_id_o                ({sb_id[SB_VLSU_VD_WD], sb_id[VLSU_VD_RD:VLSU_VS2_RD]}),
+    .vrf_raddr_o             ({vrf_raddr[VLSU_VS2_RD], vrf_raddr[VLSU_VD_RD]}      ),
+    .vrf_re_o                ({sb_re[VLSU_VS2_RD],     sb_re[VLSU_VD_RD]}          ),
+    .vrf_rdata_i             ({vrf_rdata[VLSU_VS2_RD], vrf_rdata[VLSU_VD_RD]}      ),
+    .vrf_rvalid_i            ({vrf_rvalid[VLSU_VS2_RD], vrf_rvalid[VLSU_VD_RD]}    ),
+    .vrf_id_o                ({sb_id[SB_VLSU_VD_WD], sb_id[VLSU_VS2_RD], sb_id[VLSU_VD_RD]}),
     // Interface Memory
     .spatz_mem_req_o         (spatz_mem_req_o                                      ),
     .spatz_mem_req_valid_o   (spatz_mem_req_valid_o                                ),
@@ -383,35 +387,32 @@ module spatz import spatz_pkg::*; import rvv_pkg::*; import fpnew_pkg::*; #(
     .rst_ni           (rst_ni            ),
     .testmode_i       (testmode_i        ),
 
+    // Request
+    .spatz_req_i      (spatz_req                                      ),
+    .spatz_req_valid_i(spatz_req_valid                                ),
+    .spatz_req_ready_o(/* Not unsed for now*/                         ),
+    // Response
+    .vtl_rsp_valid_o  (/* Not unsed for now*/                         ),
+    .vtl_rsp_o        (/* Not unsed for now*/                         ),
+    // from VFU
+    .vfu_rsp_valid_i  (vfu_rsp_valid    ),
+    .vfu_rsp_i        (vfu_rsp          ),
+
     // slave ports from VRF
     .waddr_i          (vrf_vtl_waddr     ),
     .wdata_i          (vrf_vtl_wdata     ),
     .we_i             (vrf_vtl_we        ),
     .wbe_i            (vrf_vtl_wbe       ),
     .wvalid_o         (vrf_vtl_wvalid    ),
+    .wscatter_en_i    (vrf_vtl_wscatter_en),
 
     .raddr_i          (vrf_vtl_raddr     ),
     .re_i             (vrf_vtl_re        ),
     .rdata_o          (vrf_vtl_rdata     ),
-    .rvalid_o         (vrf_vtl_rvalid    )
-  );
+    .rvalid_o         (vrf_vtl_rvalid    ),
+    .rgather_en_i     (vrf_vtl_rgather_en),
 
-
-  ///////////
-  // VSLDU //
-  ///////////
-
-  spatz_vsldu i_vsldu (
-    .clk_i            (clk_i                                          ),
-    .rst_ni           (rst_ni                                         ),
-    // Request
-    .spatz_req_i      (spatz_req                                      ),
-    .spatz_req_valid_i(spatz_req_valid                                ),
-    .spatz_req_ready_o(vsldu_req_ready                                ),
-    // Response
-    .vsldu_rsp_valid_o(vsldu_rsp_valid                                ),
-    .vsldu_rsp_o      (vsldu_rsp                                      ),
-    // VRF
+    // master ports to VRF
     .vrf_waddr_o      (vrf_waddr[VSLDU_VD_WD]                         ),
     .vrf_wdata_o      (vrf_wdata[VSLDU_VD_WD]                         ),
     .vrf_we_o         (sb_we[VSLDU_VD_WD]                             ),
@@ -423,6 +424,40 @@ module spatz import spatz_pkg::*; import rvv_pkg::*; import fpnew_pkg::*; #(
     .vrf_rvalid_i     (vrf_rvalid[VSLDU_VS2_RD]                       ),
     .vrf_id_o         ({sb_id[SB_VSLDU_VD_WD], sb_id[SB_VSLDU_VS2_RD]})
   );
+
+  // currently remove VSLDU for VTL, all VSLDU related instructions can not be executed
+  assign vsldu_req_ready = 1'b0; // SLDU is not ready, so that no instruction to SLDU can be dispatched
+  assign vsldu_rsp_valid = 1'b0;
+  assign vsldu_rsp       =  'b0;
+
+
+
+  ///////////
+  // VSLDU //
+  ///////////
+
+  // spatz_vsldu i_vsldu (
+  //   .clk_i            (clk_i                                          ),
+  //   .rst_ni           (rst_ni                                         ),
+  //   // Request
+  //   .spatz_req_i      (spatz_req                                      ),
+  //   .spatz_req_valid_i(spatz_req_valid                                ),
+  //   .spatz_req_ready_o(vsldu_req_ready                                ),
+  //   // Response
+  //   .vsldu_rsp_valid_o(vsldu_rsp_valid                                ),
+  //   .vsldu_rsp_o      (vsldu_rsp                                      ),
+  //   // VRF
+  //   .vrf_waddr_o      (vrf_waddr[VSLDU_VD_WD]                         ),
+  //   .vrf_wdata_o      (vrf_wdata[VSLDU_VD_WD]                         ),
+  //   .vrf_we_o         (sb_we[VSLDU_VD_WD]                             ),
+  //   .vrf_wbe_o        (vrf_wbe[VSLDU_VD_WD]                           ),
+  //   .vrf_wvalid_i     (vrf_wvalid[VSLDU_VD_WD]                        ),
+  //   .vrf_raddr_o      (vrf_raddr[VSLDU_VS2_RD]                        ),
+  //   .vrf_re_o         (sb_re[VSLDU_VS2_RD]                            ),
+  //   .vrf_rdata_i      (vrf_rdata[VSLDU_VS2_RD]                        ),
+  //   .vrf_rvalid_i     (vrf_rvalid[VSLDU_VS2_RD]                       ),
+  //   .vrf_id_o         ({sb_id[SB_VSLDU_VD_WD], sb_id[SB_VSLDU_VS2_RD]})
+  // );
 
   ////////////////
   // Assertions //

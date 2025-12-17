@@ -58,6 +58,10 @@ module spatz_decoder
         riscv_instr::VLE16_V,
         riscv_instr::VLE32_V,
         riscv_instr::VLE64_V,
+        riscv_instr::VLX8_V,
+        riscv_instr::VLX16_V,
+        riscv_instr::VLX32_V,
+        riscv_instr::VLX64_V,
         riscv_instr::VLSE8_V,
         riscv_instr::VLSE16_V,
         riscv_instr::VLSE32_V,
@@ -122,6 +126,28 @@ module spatz_decoder
               spatz_req.vd             = ls_vd;
               spatz_req.use_vd         = 1'b1;
               spatz_req.rs1            = decoder_req_i.rs1;
+              spatz_req.op_vtl.is_load_idx = 1'b0;
+            end
+
+            riscv_instr::VLX8_V,
+            riscv_instr::VLX16_V,
+            riscv_instr::VLX32_V,
+            riscv_instr::VLX64_V: begin
+              spatz_req.op                 = VLX;
+              spatz_req.op_mem.is_load     = 1'b1;
+              spatz_req.vd                 = ls_vd;
+              spatz_req.use_vd             = 1'b1;
+              spatz_req.rs1                = decoder_req_i.rs1;
+              spatz_req.op_vtl.is_load_idx = 1'b1;
+              illegal_instr        = 1'b0;
+              // Retrieve VSEW
+              unique case ({ls_mew, ls_width})
+                4'b1000: spatz_req.vtype.vsew = EW_8;
+                4'b1101: spatz_req.vtype.vsew = EW_16;
+                4'b1110: spatz_req.vtype.vsew = EW_32;
+                4'b1111: spatz_req.vtype.vsew = EW_64;
+                default: illegal_instr        = 1'b1;
+              endcase
             end
 
             riscv_instr::VLSE8_V,
@@ -167,6 +193,7 @@ module spatz_decoder
               spatz_req.use_vd         = 1'b1;
               spatz_req.vd_is_src      = 1'b1;
               spatz_req.rs1            = decoder_req_i.rs1;
+              spatz_req.op_vtl.is_load_idx = 1'b0;
             end
 
             riscv_instr::VSSE8_V,
@@ -914,6 +941,7 @@ module spatz_decoder
         riscv_instr::VFWMACC_VF,
         riscv_instr::VFWNMACC_VV,
         riscv_instr::VFWNMACC_VF,
+        riscv_instr::VFXMACC_VF,
         riscv_instr::VFWMSAC_VV,
         riscv_instr::VFWMSAC_VF,
         riscv_instr::VFWNMSAC_VV,
@@ -1158,6 +1186,15 @@ module spatz_decoder
                 spatz_req.vd_is_src          = 1'b1;
                 spatz_req.op_arith.widen_vs1 = 1'b1;
                 spatz_req.op_arith.widen_vs2 = 1'b1;
+              end
+              riscv_instr::VFXMACC_VF: begin
+                spatz_req.op                 = VFMADD;
+                spatz_req.vd_is_src          = 1'b1;
+                spatz_req.op_vtl.use_vtl     = 1'b1;
+                spatz_req.op_vtl.gather_vd   = 1'b1;
+                spatz_req.op_vtl.scatter_vd  = 1'b1;
+                spatz_req.rs2 = decoder_req_i.rs1;
+
               end
               riscv_instr::VFWNMACC_VV,
               riscv_instr::VFWNMACC_VF: begin
@@ -1709,6 +1746,10 @@ module spatz_decoder
             riscv_instr::CSR_VXSAT,
             riscv_instr::CSR_VXRM,
             riscv_instr::CSR_VCSR,
+            riscv_instr::CSR_VTLREG,
+            riscv_instr::CSR_VTLIDXW,
+            riscv_instr::CSR_VTLBLKS,
+            riscv_instr::CSR_VTLRATIO,
             riscv_instr::CSR_VLEFORWARD: begin
               spatz_req.op_csr.addr = csr_addr;
             end
@@ -1728,6 +1769,28 @@ module spatz_decoder
               if (csr_addr == riscv_instr::CSR_VLEFORWARD) begin
                 spatz_req.use_rd              = csr_rd != '0;
                 spatz_req.op_cfg.vleforward = 1'b1;
+              end
+
+              // This instruction is to config VTL status
+              // We set the bit in op_cfg (not the op_vtl field)
+              if (csr_addr == riscv_instr::CSR_VTLREG) begin
+                spatz_req.use_rd              = csr_rd != '0;
+                spatz_req.op_cfg.vtl_redirect = 1'b1;
+              end
+
+              if (csr_addr == riscv_instr::CSR_VTLIDXW) begin
+                spatz_req.use_rd                     = csr_rd != '0;
+                spatz_req.op_cfg.set_vtl_index_width = 1'b1;
+              end
+
+              if (csr_addr == riscv_instr::CSR_VTLBLKS) begin
+                spatz_req.use_rd                  = csr_rd != '0;
+                spatz_req.op_cfg.set_vtl_blk_size = 1'b1;
+              end
+
+              if (csr_addr == riscv_instr::CSR_VTLRATIO) begin
+                spatz_req.use_rd              = csr_rd != '0;
+                spatz_req.op_cfg.set_vtl_ratio = 1'b1;
               end
 
             end

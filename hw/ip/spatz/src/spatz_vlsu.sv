@@ -10,6 +10,7 @@
 module spatz_vlsu
   import spatz_pkg::*;
   import rvv_pkg::*;
+  import vtl_pkg::*;
   import cf_math_pkg::idx_width; #(
     parameter int unsigned   NrMemPorts         = 1,
     parameter int unsigned   NrOutstandingLoads = 8,
@@ -114,6 +115,17 @@ module spatz_vlsu
         spatz_req_d.vstart = spatz_req_i.vstart << MAXEW;
       end
     endcase
+
+    //vl modification for vlx
+    if (spatz_req_d.op_vtl.is_load_idx) begin
+      unique case (spatz_req_d.op_vtl.sp_cfg.sp_cfg_index_width)
+        IDXW_1  : spatz_req_d.vl = spatz_req_i.vl >> 4;
+        IDXW_2  : spatz_req_d.vl = spatz_req_i.vl >> 2;
+        IDXW_4  : spatz_req_d.vl = spatz_req_i.vl >> 1;
+        IDXW_8  : spatz_req_d.vl = spatz_req_i.vl;
+        default : spatz_req_d.vl = spatz_req_i.vl;
+      endcase
+    end
   end: proc_spatz_req
 
   // Do we have a strided memory access

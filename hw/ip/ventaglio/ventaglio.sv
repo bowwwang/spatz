@@ -19,11 +19,17 @@ module ventaglio
     input  logic            clk_i,
     input  logic            rst_ni,
     input  logic            testmode_i,
-    // configs
-    // input  logic 	[7:0] 	vtg_mode_i,
-    // input  logic 	[7:0] 	vtg_ratio_i,
-    // index ports
-    // input  vrf_data_t  		vtg_index_i,
+
+    // Spatz request
+    input  spatz_req_t       spatz_req_i,
+    input  logic             spatz_req_valid_i,
+    output logic             spatz_req_ready_o,
+    // VTL response
+    output logic             vtl_rsp_valid_o,
+    output vsldu_rsp_t       vtl_rsp_o,
+    // VFU response
+    input  logic             vfu_rsp_valid_i,
+    input  vfu_rsp_t         vfu_rsp_i,
 
     // Slave Write ports
     input  vrf_addr_t  [NrWritePorts-1:0]		waddr_i,
@@ -31,12 +37,137 @@ module ventaglio
     input  logic       [NrWritePorts-1:0]		we_i,
     input  vrf_be_t    [NrWritePorts-1:0]		wbe_i,
     output logic       [NrWritePorts-1:0]		wvalid_o,
+    input  logic       [NrWritePorts-1:0]   wscatter_en_i,
     // Slave Read ports
     input  vrf_addr_t  [NrReadPorts-1:0]		raddr_i,
     input  logic       [NrReadPorts-1:0]		re_i,
     output vrf_data_t  [NrReadPorts-1:0]		rdata_o,
-    output logic       [NrReadPorts-1:0]		rvalid_o
+    output logic       [NrReadPorts-1:0]		rvalid_o,
+    input  logic       [NrReadPorts-1:0]    rgather_en_i,
+
+    // Master VRF interface
+    output vrf_addr_t                       vrf_waddr_o,
+    output vrf_data_t                       vrf_wdata_o,
+    output logic                            vrf_we_o,
+    output vrf_be_t                         vrf_wbe_o,
+    input  logic                            vrf_wvalid_i,
+    output spatz_id_t  [1:0]                vrf_id_o,
+    output vrf_addr_t                       vrf_raddr_o,
+    output logic                            vrf_re_o,
+    // output logic                            vrf_idx_r_o,
+    input  vrf_data_t                       vrf_rdata_i,
+    input  logic                            vrf_rvalid_i
   );
+
+// Include FF
+`include "common_cells/registers.svh"
+  
+  ///////////////////////
+  //  Operation queue  //
+  ///////////////////////
+
+  spatz_req_t spatz_req_d;
+
+  spatz_req_t spatz_req;
+  logic       spatz_req_valid;
+  logic       spatz_req_ready;
+
+  spill_register #(
+    .T(spatz_req_t)
+  ) i_operation_queue (
+    .clk_i  (clk_i                                                                        ),
+    .rst_ni (rst_ni                                                                       ),
+    .data_i (spatz_req_d                                                                  ),
+    .valid_i(spatz_req_valid_i && spatz_req_i.ex_unit == VFU && spatz_req_i.op_vtl.use_vtl), // currently we only care about instructions with sc/ga
+    .ready_o(spatz_req_ready_o                                                            ),
+    .data_o (spatz_req                                                                    ),
+    .valid_o(spatz_req_valid                                                              ),
+    .ready_i(spatz_req_ready                                                              )
+  );
+
+  always_comb begin : proc_spatz_req
+    spatz_req_d = spatz_req_i;
+  end
+
+  /******************************/
+  /*       State Handler        */ 
+  /******************************/
+  // Currently running instructions
+  logic [NrParallelInstructions-1:0] running_d, running_q;
+  `FF(running_q, running_d, '0)
+
+  // New instruction
+  // Initialize the internal state one cycle in advance
+  logic new_vtl_request_d, new_vtl_request_q;
+  assign new_vtl_request_d = spatz_req_valid && !running_q[spatz_req.id];
+  `FF(new_vtl_request_q, new_vtl_request_d, '0)
+
+  always_comb begin : proc_vtl_state
+    running_d = running_q;
+    spatz_req_ready  = 1'b0;
+    // Operation queue is ready for the new instruction if non is in process
+    spatz_req_ready = !spatz_req_valid;
+
+    // A new spatz_req is recieved
+    if (new_vtl_request_d) begin
+      running_d[spatz_req.id] = 1'b1; // mark the instruction as running
+    end
+
+    if (running_q[vfu_rsp_i.id] && vfu_rsp_valid_i) begin // VFU finished this instruciton 
+      running_d[spatz_req.id] = 1'b0;  // mark the instruction as finished
+      spatz_req_ready         = 1'b1;
+    end
+  end 
+
+  //////////////////////////
+  //  Read Index Request  //
+  //////////////////////////
+
+  // Vector register file counter signals for index
+  logic      vreg_idx_counter_en;
+  vrf_addr_t vreg_idx_counter_d;
+  vrf_addr_t vreg_idx_counter_q;
+  `FF(vreg_idx_counter_q, vreg_idx_counter_d, '0)
+
+  always_comb begin : proc_idx_counter
+    vreg_idx_counter_d = vreg_idx_counter_q;
+    if (vreg_idx_counter_en) begin
+      vreg_idx_counter_d = vreg_idx_counter_q + 1'b1;
+    end
+    if (running_q[vfu_rsp_i.id] && vfu_rsp_valid_i) begin // VFU finished this instruciton 
+      vreg_idx_counter_d = '0;
+    end
+  end
+
+  // index is stored in VRef, which is mapped to VTL
+  vreg_t vidx;
+  always_comb begin
+    vidx = '0;
+    if (spatz_req.op_vtl.gather_vs1) begin
+      vidx = spatz_req.vs1;
+    end else if (spatz_req.op_vtl.gather_vs2) begin 
+      vidx = spatz_req.vs2;
+    end else if (spatz_req.op_vtl.gather_vd || spatz_req.op_vtl.scatter_vd) begin
+      vidx = spatz_req.vd;
+    end
+
+    // address generation
+    vrf_raddr_o     = {vidx, $clog2(NrWordsPerVector)'(1'b0)} + vreg_idx_counter_q;
+    if (vreg_idx_counter_en)
+      vrf_raddr_o     = {vidx, $clog2(NrWordsPerVector)'(1'b0)} + vreg_idx_counter_q + 1'b1;
+  end
+
+  assign vrf_id_o[0]     = spatz_req.id; // ID of the instruction currently reading elements
+  assign vrf_re_o        = spatz_req_valid && running_q[spatz_req.id];
+  // assign vrf_idx_r_o     = spatz_req.op_vtl.use_vtl;
+
+  /******************************/
+  /*       Index Buffer         */ 
+  /******************************/
+  vrf_data_t index_d, index_q;
+  `FF(index_q, index_d, 'b0);
+
+  assign index_d = vrf_rvalid_i ? vrf_rdata_i : index_q;
 
   /******************************/
   /*           Types            */ 
@@ -75,6 +206,17 @@ module ventaglio
   /*          Signals           */ 
   /******************************/
 
+  // signals for gather or scatter
+  logic is_gather, is_scatter;
+  always_comb begin
+    is_gather  = 1'b0;
+    is_scatter = 1'b0;
+    if (running_q[spatz_req.id]) begin // first check is this scatter/gather instruction is still running
+      is_gather  = (spatz_req.op_vtl.gather_vd || spatz_req.op_vtl.gather_vs1 || spatz_req.op_vtl.gather_vs2) && rgather_en_i;
+      is_scatter = spatz_req.op_vtl.scatter_vd && wscatter_en_i;
+    end
+  end
+
   // write signals
   // TODO: support more write port to make it more general
   vtg_row_addr_t          [VTGNrChannels-1:0] waddr;
@@ -87,13 +229,32 @@ module ventaglio
   ventaglio_narrow_data_t [VTGNrChannels-1:0][VTGNrReadPortsPerBank-1:0] rdata;
 
   // write mapping 
-  logic [VTGNrChannels-1:0][NrWritePorts-1:0] write_request;
+  logic                    [VTGNrChannels-1:0][NrWritePorts-1:0] write_request;
+  logic [VTGNrChannels-1:0][VTGNrChannels-1:0][NrWritePorts-1:0] scatter_write_request;
+
+  // post scatter signals
+  logic                    [VTGNrChannels-1:0][NrWritePorts-1:0] scatter_we;
+  vrf_addr_t               [VTGNrChannels-1:0][NrWritePorts-1:0] scatter_waddr;
+  vrf_data_t               [VTGNrChannels-1:0][NrWritePorts-1:0] scatter_wdata;
+  vrf_be_t                 [VTGNrChannels-1:0][NrWritePorts-1:0] scatter_wbe;
+
+  logic                    [VTGNrChannels-1:0][NrWritePorts-1:0] scatter_wvalid;
+
+  logic                    [NrWritePorts-1:0] post_scatter_wvalid;
+
   always_comb begin: gen_write_request
     for (int channel = 0; channel < VTGNrChannels; channel++) begin
       for (int port = 0; port < NrWritePorts; port++) begin
-        write_request[channel][port] = we_i[port] && f_channel(waddr_i[port]) == channel;
-
+        write_request[channel][port] = we_i[port] && f_channel(waddr_i[port]) == channel && !is_scatter;
       end
+    end
+    // scatter requests
+    for (int b_channel = 0; b_channel < VTGNrChannels; b_channel++) begin   // channels from the bank side
+      for (int s_channel = 0; s_channel < VTGNrChannels; s_channel++) begin // channels from the scatter datapath side 
+        for (int port = 0; port < NrWritePorts; port++) begin
+          scatter_write_request[b_channel][s_channel][port] = scatter_we[s_channel][port] && f_channel(scatter_waddr[s_channel][port]) == b_channel && is_scatter;
+        end
+      end 
     end
   end: gen_write_request
 
@@ -104,53 +265,130 @@ module ventaglio
     wbe      = '0;
     wvalid_o = '0;
 
-    for (int unsigned channel = 0; channel < VTGNrChannels; channel++) begin
-      if (write_request[channel][VRF_WD]) begin
-        waddr[channel]         = f_row(waddr_i[VRF_WD]);
-        wdata[channel]         = wdata_i[VRF_WD];
-        we[channel]            = 1'b1;
-        wbe[channel]           = wbe_i[VRF_WD];
-        wvalid_o[VRF_WD]       = 1'b1;
-      end 
-    end
+    if (!is_scatter) begin // priority 1: normal requests
+      for (int unsigned channel = 0; channel < VTGNrChannels; channel++) begin
+        if (write_request[channel][VRF_WD]) begin
+          waddr[channel]         = f_row(waddr_i[VRF_WD]);
+          wdata[channel]         = wdata_i[VRF_WD];
+          we[channel]            = 1'b1;
+          wbe[channel]           = wbe_i[VRF_WD];
+          wvalid_o[VRF_WD]       = 1'b1;
+        end 
+      end
+    end else begin // priority 2: scatter requests
+      for (int unsigned b_channel = 0; b_channel < VTGNrChannels; b_channel++) begin   // channels from the bank side
+        for (int unsigned s_channel = 0; s_channel < VTGNrChannels; s_channel++) begin // channels from the scatter datapath side
+          if (scatter_write_request[b_channel][s_channel][VRF_WD]) begin
+            waddr[b_channel]                  = f_row(scatter_waddr[s_channel][VRF_WD]);
+            wdata[b_channel]                  = scatter_wdata[s_channel][VRF_WD];
+            we[b_channel]                     = 1'b1;
+            wbe[b_channel]                    = scatter_wbe[s_channel][VRF_WD];
+            scatter_wvalid[s_channel][VRF_WD] = 1'b1;
+          end
+        end
+      end
+      // assign the scatter write valid signal to the output 
+      wvalid_o[VRF_WD]     = post_scatter_wvalid[0];
+    end 
+
   end : proc_write
 
   // read mapping
+
+  // read_request: non-gather request signals
+  // gathered_read_request: gather request signals
   logic [VTGNrChannels-1:0][NrReadPorts-1:0] read_request;
+
+  logic [VTGNrChannels-1:0][VTGNrChannels-1:0][NrReadPorts-1:0] gather_read_request;
+  logic                    [VTGNrChannels-1:0][NrReadPorts-1:0] gather_re;
+  vrf_addr_t               [VTGNrChannels-1:0][NrReadPorts-1:0] gather_raddr;
+
+  vrf_data_t               [VTGNrChannels-1:0][NrReadPorts-1:0] gather_rdata;
+  logic                    [VTGNrChannels-1:0][NrReadPorts-1:0] gather_rvalid;
+
+  // post gather signals
+  vrf_data_t               [NrReadPorts-1:0] post_gather_rdata;
+  logic                    [NrReadPorts-1:0] post_gather_rvalid;
+
   always_comb begin: gen_read_request
+    // normal requests
     for (int channel = 0; channel < VTGNrChannels; channel++) begin
       for (int port = 0; port < NrReadPorts; port++) begin
-        read_request[channel][port] = re_i[port] && f_channel(raddr_i[port]) == channel;
+        read_request[channel][port] = re_i[port] && f_channel(raddr_i[port]) == channel && !(is_gather);
       end
+    end
+    // gathered requests
+    for (int b_channel = 0; b_channel < VTGNrChannels; b_channel++) begin   // channels from the bank side
+      for (int g_channel = 0; g_channel < VTGNrChannels; g_channel++) begin // channels from the gather datapath side 
+        for (int port = 0; port < NrReadPorts; port++) begin
+          gather_read_request[b_channel][g_channel][port] = gather_re[g_channel][port] && f_channel(gather_raddr[g_channel][port]) == b_channel && is_gather;
+        end
+      end 
     end
   end: gen_read_request
 
+  // this should be extended for gather
   always_comb begin : proc_read
     raddr    = '0;
     rvalid_o = '0;
     rdata_o  = 'x;
 
-    for (int unsigned channel = 0; channel < VTGNrChannels; channel++) begin
-      if (read_request[channel][VRF_RD]) begin
-        raddr[channel][0]    = f_row(raddr_i[VRF_RD]);
-        rdata_o[VRF_RD]      = rdata[channel][0];
-        rvalid_o[VRF_RD]     = 1'b1;
-      end 
-    end
+    gather_rvalid = '0;
+    gather_rdata  = 'x;
+
+    if (!is_gather) begin // priority 1: normal read requests
+      for (int unsigned b_channel = 0; b_channel < VTGNrChannels; b_channel++) begin // channels from the bank side
+        if (read_request[b_channel][VRF_RD]) begin
+          raddr[b_channel][0]    = f_row(raddr_i[VRF_RD]);
+          rdata_o[VRF_RD]      = rdata[b_channel][0];
+          rvalid_o[VRF_RD]     = 1'b1;
+        end
+      end
+    end else if (is_gather) begin // priority 2: gather accesses
+      for (int unsigned b_channel = 0; b_channel < VTGNrChannels; b_channel++) begin // channels from the bank side
+        for (int unsigned g_channel = 0; g_channel < VTGNrChannels; g_channel++) begin // channels from the gather datapath side
+          if (gather_read_request[b_channel][g_channel][VRF_RD]) begin
+            raddr[b_channel][0]                  = f_row(gather_raddr[g_channel][VRF_RD]);
+            gather_rdata[g_channel][VRF_RD]      = rdata[b_channel][0];
+            gather_rvalid[g_channel][VRF_RD]     = 1'b1;
+          end
+        end
+      end
+      // assign the gathered data to the output 
+      rdata_o[VRF_RD]      = post_gather_rdata[0];
+      rvalid_o[VRF_RD]     = post_gather_rvalid[0];
+    end 
   end
-
-
-
-  // scatter --> buffer
-  // elen_t [VTGNrChannels-1:0][VTGNrBanksPerChannel-1:0] wdara_post_scatter;
-
-  // buffer --> gather
-  // elen_t     [VTGNrChannels-1:0][VTGNrBanksPerChannel-1:0]  rdara_pre_gather;
-  // vtg_addr_t [VTGNrChannels-1:0][VTGNrReadPortsPerBank-1:0] raddr;
 
   /******************************/
   /*      Scatter DataPath      */ 
   /******************************/
+  ventaglio_scatter #(
+    .NarrowDataWidth (NarrowDataWidth),
+    .WideDataWidth   (WideDataWidth)
+  ) i_vtl_scatter (
+    .clk_i       (clk_i),
+    .rst_ni      (rst_ni),
+    .testmode_i  (testmode_i),
+    // narrow ports
+    .waddr_i     (waddr_i),
+    .wdata_i     (wdata_i),
+    .we_i        (we_i && is_scatter),
+    .wbe_i       (wbe_i),
+    .wvalid_o    (post_scatter_wvalid[0]),
+    // wide ports
+    .waddr_o     (scatter_waddr),
+    .wdata_o     (scatter_wdata),
+    .we_o        (scatter_we),
+    .wbe_o       (scatter_wbe),
+    .wvalid_i    (scatter_wvalid),
+    // control 
+    .scatter_done_i      (!is_scatter),
+    // controls
+    .index_i     (index_q                ),
+    .vtl_cfg_i   (spatz_req.op_vtl.sp_cfg),
+    .new_scatter_request (new_vtl_request_d && is_scatter)
+  );
 
 
   /******************************/
@@ -190,5 +428,30 @@ module ventaglio
   /******************************/
   /*      Gather  DataPath      */ 
   /******************************/
+
+  ventaglio_gather #(
+    .NarrowDataWidth (NarrowDataWidth),
+    .WideDataWidth   (WideDataWidth)
+  ) i_vtl_gather (
+    .clk_i       (clk_i),
+    .rst_ni      (rst_ni),
+    .testmode_i  (testmode_i),
+    // narrow ports
+    .raddr_i     (raddr_i              ),
+    .re_i        (re_i && is_gather    ),
+    .rdata_o     (post_gather_rdata[0] ),
+    .rvalid_o    (post_gather_rvalid[0]),
+    // wide ports
+    .raddr_o     (gather_raddr         ),
+    .re_o        (gather_re            ),
+    .rdata_i     (gather_rdata         ),
+    .rvalid_i    (gather_rvalid        ),
+    // control
+    .gather_done_i(!is_gather          ),
+    // index cfg
+    .index_i     (index_d              ),
+    .vtl_cfg_i   (spatz_req.op_vtl.sp_cfg),
+    .load_index_o(vreg_idx_counter_en)
+  );
 
 endmodule : ventaglio
