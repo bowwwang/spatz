@@ -90,25 +90,28 @@ int main() {
     float    * _w        = w;
     uint32_t * _nm_index = nm_index;
     float    * _res      = res;
+    // float    * _a        = a;
 
     do {
       // Outer loop, P dimension
       asm volatile("vsetvli %0, %1, e32, m4, ta, ma" : "=r"(vl) : "r"(avl));
 
       // pointers for inner loop
+      float    * _a        = a;
       float    * __w       = _w;
       uint32_t *__nm_index = _nm_index;
 
       for (uint32_t n = 0; n < N; n++){
         // load scalar activation
-        float act  = a[n];
+        asm volatile("flw      ft0,  (%0)" ::"r"(_a));
         // load index 
         asm volatile("vlx32.v v16,   (%0)" ::"r"(__nm_index));
         // load compact weight vector 
         asm volatile("vle32.v v8,    (%0)" ::"r"(__w));
         // index-macc
-        asm volatile("vfxmacc.vf v16, %0, v8" ::"f"(act));
+        asm volatile("vfxmacc.vf v16, ft0, v8" ::);
         // bump the inner loop pointers
+        _a         += 1;
         __w        += P_W;
         __nm_index += NM_INDEX_ROW_WORDS;
       }
