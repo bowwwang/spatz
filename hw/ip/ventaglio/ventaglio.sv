@@ -167,7 +167,7 @@ module ventaglio
   vrf_data_t index_d, index_q;
   `FF(index_q, index_d, 'b0);
 
-  assign index_d = vrf_rvalid_i ? vrf_rdata_i : index_q;
+  assign index_d      = vrf_rvalid_i ? vrf_rdata_i : index_q;
 
   /******************************/
   /*           Types            */ 
@@ -208,13 +208,17 @@ module ventaglio
 
   // signals for gather or scatter
   logic is_gather, is_scatter;
+  // always_comb begin
+  //   is_gather  = 1'b0;
+  //   is_scatter = 1'b0;
+  //   if (running_q[spatz_req.id]) begin // first check is this scatter/gather instruction is still running
+  //     is_gather  = (spatz_req.op_vtl.gather_vd || spatz_req.op_vtl.gather_vs1 || spatz_req.op_vtl.gather_vs2) && rgather_en_i;
+  //     is_scatter = spatz_req.op_vtl.scatter_vd && wscatter_en_i;
+  //   end
+  // end
   always_comb begin
-    is_gather  = 1'b0;
-    is_scatter = 1'b0;
-    if (running_q[spatz_req.id]) begin // first check is this scatter/gather instruction is still running
-      is_gather  = (spatz_req.op_vtl.gather_vd || spatz_req.op_vtl.gather_vs1 || spatz_req.op_vtl.gather_vs2) && rgather_en_i;
-      is_scatter = spatz_req.op_vtl.scatter_vd && wscatter_en_i;
-    end
+    is_gather  = (spatz_req.op_vtl.gather_vd || spatz_req.op_vtl.gather_vs1 || spatz_req.op_vtl.gather_vs2) && rgather_en_i;
+    is_scatter = spatz_req.op_vtl.scatter_vd && wscatter_en_i;
   end
 
   // write signals
@@ -259,11 +263,12 @@ module ventaglio
   end: gen_write_request
 
   always_comb begin : proc_write
-    waddr    = '0;
-    wdata    = '0;
-    we       = '0;
-    wbe      = '0;
-    wvalid_o = '0;
+    waddr          = '0;
+    wdata          = '0;
+    we             = '0;
+    wbe            = '0;
+    wvalid_o       = '0;
+    scatter_wvalid = '0;
 
     if (!is_scatter) begin // priority 1: normal requests
       for (int unsigned channel = 0; channel < VTGNrChannels; channel++) begin
@@ -387,7 +392,7 @@ module ventaglio
     // controls
     .index_i     (index_q                ),
     .vtl_cfg_i   (spatz_req.op_vtl.sp_cfg),
-    .new_scatter_request (new_vtl_request_d && is_scatter)
+    .new_scatter_request (vrf_rvalid_i) // meaning a new read data available
   );
 
 

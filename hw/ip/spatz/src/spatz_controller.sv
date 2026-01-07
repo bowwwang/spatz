@@ -101,6 +101,8 @@ module spatz_controller
     vl_d       = vl_q;
     vtype_d    = vtype_q;
     vtl_en_d   = vtl_en_q;   // VTL extension enable
+    VTLVreg_d  = VTLVreg_q;
+    VTL_cfg_d  = VTL_cfg_q;
 
     if (spatz_req_valid) begin
       // Reset vstart to zero if we have a new non CSR operation
