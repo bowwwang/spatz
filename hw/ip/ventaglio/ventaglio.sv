@@ -158,7 +158,8 @@ module ventaglio
   end
 
   assign vrf_id_o[0]     = spatz_req.id; // ID of the instruction currently reading elements
-  assign vrf_re_o        = spatz_req_valid && running_q[spatz_req.id];
+  assign vrf_re_o        = spatz_req_valid && running_d[spatz_req.id];
+  // assign vrf_re_o        = spatz_req_valid && running_d[spatz_req.id] && !running_q[spatz_req.id];
   // assign vrf_idx_r_o     = spatz_req.op_vtl.use_vtl;
 
   /******************************/
@@ -454,7 +455,7 @@ module ventaglio
     // control
     .gather_done_i(!is_gather          ),
     // index cfg
-    .index_i     (index_d              ),
+    .index_i     (index_q              ),
     .vtl_cfg_i   (spatz_req.op_vtl.sp_cfg),
     .load_index_o(vreg_idx_counter_en)
   );
