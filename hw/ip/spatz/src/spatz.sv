@@ -307,6 +307,8 @@ module spatz import spatz_pkg::*; import rvv_pkg::*; import fpnew_pkg::*; #(
   // VFU //
   /////////
 
+  logic vfu_vtl_req_ready;
+
   spatz_vfu #(
     .FPUImplementation(FPUImplementation)
   ) i_vfu (
@@ -314,9 +316,10 @@ module spatz import spatz_pkg::*; import rvv_pkg::*; import fpnew_pkg::*; #(
     .rst_ni           (rst_ni                                                  ),
     .hart_id_i        (hart_id_i                                               ),
     // Request
-    .spatz_req_i      (spatz_req                                               ),
-    .spatz_req_valid_i(spatz_req_valid                                         ),
-    .spatz_req_ready_o(vfu_req_ready                                           ),
+    .spatz_req_i         (spatz_req                                            ),
+    .spatz_req_valid_i   (spatz_req_valid                                      ),
+    .spatz_req_ready_o   (vfu_req_ready                                        ),
+    .vfu_vtl_req_ready_o (vfu_vtl_req_ready                                    ),
     // Response
     .vfu_rsp_valid_o  (vfu_rsp_valid                                           ),
     .vfu_rsp_ready_i  (vfu_rsp_ready                                           ),
@@ -388,9 +391,11 @@ module spatz import spatz_pkg::*; import rvv_pkg::*; import fpnew_pkg::*; #(
     .testmode_i       (testmode_i        ),
 
     // Request
-    .spatz_req_i      (spatz_req                                      ),
-    .spatz_req_valid_i(spatz_req_valid                                ),
-    .spatz_req_ready_o(/* Not unsed for now*/                         ),
+    .spatz_req_i          (spatz_req                                      ),
+    .spatz_req_valid_i    (spatz_req_valid                                ),
+    .spatz_req_ready_o    (/* Not unsed for now*/                         ),
+    // req_ready signal from VFU
+    .spatz_vfu_req_ready_i(vfu_vtl_req_ready                              ),
     // Response
     .vtl_rsp_valid_o  (/* Not unsed for now*/                         ),
     .vtl_rsp_o        (/* Not unsed for now*/                         ),

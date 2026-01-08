@@ -327,6 +327,8 @@ module spatz_controller
       //                     2. The requested operand is in VTL
       //                     3. check is the index is ready or not
       sb_enable_o[port] = (vtl_en_q && vtl_table_q[sb_id_i[port]].use_vtl && vtl_table_wr[sb_id_i[port]][port]) ? (vtl_table_q[sb_id_i[port]].index_valid && sb_enable[port]) : sb_enable[port];
+      // fall through read request from VTL for index 
+      // sb_enable_o[SB_VSLDU_VS2_RD] = sb_enable_i[SB_VSLDU_VS2_RD];
 
       if (sb_enable_o[port] && vtl_en_q) begin : proc_vtl_rw_o
         if (port < NrReadPorts) begin // read
@@ -426,16 +428,6 @@ module spatz_controller
             // Let's say if v8 is mapped to VTL
             // for an instruction do not use VTL, v8 is still in Vregfile
             // This is distinguished from spatz_req.op_vtl settings
-            /*
-            if (spatz_req.use_vs1 && spatz_req.op_vtl.gather_vs1 && spatz_req.vs1 == VTLVreg_q) // VFU read: vs1
-              vtl_table_d[spatz_req.id].read[SB_VFU_VS1_RD] = 1'b1;
-            if (spatz_req.use_vs2 && spatz_req.op_vtl.gather_vs2 && spatz_req.vs2 == VTLVreg_q) // VFU read: vs2
-              vtl_table_d[spatz_req.id].read[SB_VFU_VS2_RD] = 1'b1;
-            if (spatz_req.vd_is_src && spatz_req.op_vtl.gather_vd && spatz_req.vd == VTLVreg_q) // VFU read: vd
-              vtl_table_d[spatz_req.id].read[SB_VFU_VD_RD] = 1'b1;
-            if (spatz_req.use_vd && spatz_req.op_vtl.scatter_vd && spatz_req.vd == VTLVreg_q)   // VFU write: vd
-              vtl_table_d[spatz_req.id].write[SB_VFU_VD_WD-NrReadPorts] = 1'b1;
-            */
             if (spatz_req.use_vs1   && spatz_req.vs1 == VTLVreg_q) // VFU read: vs1
               vtl_table_d[spatz_req.id].read[SB_VFU_VS1_RD] = 1'b1;
             if (spatz_req.use_vs2   && spatz_req.vs2 == VTLVreg_q) // VFU read: vs2

@@ -34,7 +34,7 @@ module ventaglio_scatter
     // index
     input  vrf_data_t                           index_i,
     input  sp_cfg_t 							vtl_cfg_i,
-    input  logic                                new_scatter_request
+    input  logic                                index_valid_i
   );
 
   // Include FF
@@ -126,7 +126,7 @@ module ventaglio_scatter
 
   always_comb begin
   	index_d = index_q;
-  	if ( (new_scatter_request && beat_cnt_q == '0) || beat_cnt_q == NrBeatsPerInput - 1) begin 
+  	if ( index_valid_i && ((beat_cnt_q == '0) || beat_cnt_q == NrBeatsPerInput - 1) ) begin 
   		index_d = index_i;
   	end 
   end

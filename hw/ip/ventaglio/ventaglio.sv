@@ -24,6 +24,7 @@ module ventaglio
     input  spatz_req_t       spatz_req_i,
     input  logic             spatz_req_valid_i,
     output logic             spatz_req_ready_o,
+    input  logic             spatz_vfu_req_ready_i,
     // VTL response
     output logic             vtl_rsp_valid_o,
     output vsldu_rsp_t       vtl_rsp_o,
@@ -54,7 +55,6 @@ module ventaglio
     output spatz_id_t  [1:0]                vrf_id_o,
     output vrf_addr_t                       vrf_raddr_o,
     output logic                            vrf_re_o,
-    // output logic                            vrf_idx_r_o,
     input  vrf_data_t                       vrf_rdata_i,
     input  logic                            vrf_rvalid_i
   );
@@ -114,7 +114,10 @@ module ventaglio
     end
 
     if (running_q[vfu_rsp_i.id] && vfu_rsp_valid_i) begin // VFU finished this instruciton 
-      running_d[spatz_req.id] = 1'b0;  // mark the instruction as finished
+      running_d[vfu_rsp_i.id] = 1'b0;  // mark the instruction as finished
+      // spatz_req_ready         = 1'b1;
+    end
+    if (spatz_vfu_req_ready_i) begin
       spatz_req_ready         = 1'b1;
     end
   end 
@@ -128,6 +131,22 @@ module ventaglio
   vrf_addr_t vreg_idx_counter_d;
   vrf_addr_t vreg_idx_counter_q;
   `FF(vreg_idx_counter_q, vreg_idx_counter_d, '0)
+
+  logic index_valid_d, index_valid_q;
+  `FF(index_valid_q, index_valid_d, '0)
+
+  // naive index valid logic handling
+  always_comb begin : proc_index_valid
+    index_valid_d = index_valid_q;
+    if (vrf_rvalid_i) begin 
+      // VALID when a new index is available from read
+      index_valid_d = 1'b1;
+    end 
+    if (spatz_vfu_req_ready_i) begin 
+      // INVALID when VFU has a new req to process 
+      index_valid_d = 1'b0;
+    end
+  end 
 
   always_comb begin : proc_idx_counter
     vreg_idx_counter_d = vreg_idx_counter_q;
@@ -158,9 +177,12 @@ module ventaglio
   end
 
   assign vrf_id_o[0]     = spatz_req.id; // ID of the instruction currently reading elements
-  assign vrf_re_o        = spatz_req_valid && running_d[spatz_req.id];
-  // assign vrf_re_o        = spatz_req_valid && running_d[spatz_req.id] && !running_q[spatz_req.id];
-  // assign vrf_idx_r_o     = spatz_req.op_vtl.use_vtl;
+  // assign vrf_re_o        = spatz_req_valid && running_d[spatz_req.id];
+
+  // Logic to issue the read request for loading indices
+  // 1. When a new spatz_req is received --> issue
+  // 2. PENDING: When the current indices is depleted
+  assign vrf_re_o        = spatz_req_valid && (running_d[spatz_req.id] && !index_valid_q);
 
   /******************************/
   /*       Index Buffer         */ 
@@ -356,7 +378,8 @@ module ventaglio
           if (gather_read_request[b_channel][g_channel][VRF_RD]) begin
             raddr[b_channel][0]                  = f_row(gather_raddr[g_channel][VRF_RD]);
             gather_rdata[g_channel][VRF_RD]      = rdata[b_channel][0];
-            gather_rvalid[g_channel][VRF_RD]     = 1'b1;
+            // gather_rvalid[g_channel][VRF_RD]     = 1'b1;
+            gather_rvalid[g_channel][VRF_RD]     = index_valid_q;
           end
         end
       end
@@ -391,9 +414,9 @@ module ventaglio
     // control 
     .scatter_done_i      (!is_scatter),
     // controls
-    .index_i     (index_q                ),
-    .vtl_cfg_i   (spatz_req.op_vtl.sp_cfg),
-    .new_scatter_request (vrf_rvalid_i) // meaning a new read data available
+    .index_i       (index_q                ),
+    .vtl_cfg_i     (spatz_req.op_vtl.sp_cfg),
+    .index_valid_i (index_valid_q) // meaning a new read data available
   );
 
 
@@ -459,5 +482,16 @@ module ventaglio
     .vtl_cfg_i   (spatz_req.op_vtl.sp_cfg),
     .load_index_o(vreg_idx_counter_en)
   );
+
+  /******************************/
+  /*      Write Requests        */ 
+  /******************************/
+
+  assign vrf_we_o    = '0;
+  assign vrf_wbe_o   = '0;
+  assign vrf_waddr_o = '0;
+  assign vrf_wdata_o = '0;
+
+
 
 endmodule : ventaglio
