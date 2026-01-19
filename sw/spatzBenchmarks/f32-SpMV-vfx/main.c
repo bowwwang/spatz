@@ -23,6 +23,12 @@
 
 #include "data/data_vfxmacc.h"
 
+#define _BASELINE_KERNEL    (0)
+#define _INTERLEAVED_KERNEL (1)
+#define _IMPROVED_KERNEL    (2)
+
+#define _SEL_KERENL         (_BASELINE_KERNEL)
+
 float     *a;          // activation vector
 float     *w;          // compact weight matrix 
 uint32_t  *nm_index;   // index matrix
@@ -35,7 +41,12 @@ static inline int fp32_check(float *a, float *b) {
 
   // Absolute value
   float comp = 0.0f;
-  for (uint32_t i=0; i<P; i++){
+  for (uint32_t i=0; i<P/2; i++){
+    comp = b[i] - a[i];
+    if (comp < 0) comp = -comp;
+    if (comp > threshold) printf("[%d] EXP - %8x, GOT - %8x \n", i, *(int32_t *)&a[i], *(int32_t *)&b[i]);
+  }
+  for (uint32_t i=0; i<P/2; i++){
     comp += b[i] - a[i];
   }
   if (comp < 0)
@@ -90,17 +101,20 @@ int main() {
     float    * _w        = w;
     uint32_t * _nm_index = nm_index;
     float    * _res      = res;
-    // float    * _a        = a;
 
     do {
       // Outer loop, P dimension
-      asm volatile("vsetvli %0, %1, e32, m4, ta, ma" : "=r"(vl) : "r"(avl));
+      asm volatile("vsetvli %0, %1, e32, m8, ta, ma" : "=r"(vl) : "r"(avl));
 
       // pointers for inner loop
       float    * _a        = a;
       float    * __w       = _w;
       uint32_t *__nm_index = _nm_index;
 
+      ////////////////////////////////////
+      // BASELINE kernel implementation //
+      ////////////////////////////////////
+      #if _SEL_KERENL == _BASELINE_KERNEL
       for (uint32_t n = 0; n < N; n++){
         // load scalar activation
         asm volatile("flw      ft0,  (%0)" ::"r"(_a));
@@ -115,6 +129,33 @@ int main() {
         __w        += P_W;
         __nm_index += NM_INDEX_ROW_WORDS;
       }
+      #endif 
+
+      //////////////////////////////////////
+      // INTERLEAVE kernel implementation //
+      //////////////////////////////////////
+      #if _SEL_KERENL == _INTERLEAVED_KERNEL
+      for (uint32_t n = 0; n < N; n++){
+        // load scalar activation
+        asm volatile("flw      ft0,  (%0)" ::"r"(_a));
+        _a         += 1;
+        // load index 
+        asm volatile("vlx32.v v16,   (%0)" ::"r"(__nm_index));
+        // load compact weight vector 
+        asm volatile("vle32.v v8,    (%0)" ::"r"(__w));
+        __nm_index += NM_INDEX_ROW_WORDS;
+        __w        += P_W;
+        // index-macc
+        asm volatile("vfxmacc.vf v16, ft0, v8" ::);
+      }
+      #endif
+
+      ////////////////////////////////////
+      // IMPROVED_KERNEL implementation //
+      ////////////////////////////////////
+      #if _SEL_KERENL == _IMPROVED_KERNEL
+
+      #endif 
 
       // move out
       savl = vl * (M_SPARSE/N_SPARSE);

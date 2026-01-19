@@ -512,8 +512,7 @@ package spatz_pkg;
   // By default, Ventaglio supports 4x scatter/gather
   localparam int unsigned VENTAGLIO_WFACTOR     = `ifdef VENTAGLIO_WFACTOR `VENTAGLIO_WFACTOR `else 4 `endif;
   // Buffer size in bit. By default: 4096 (4K-bit)
-  localparam int unsigned VENTAGLIO_BUFFER_SIZE = `ifdef VENTAGLIO_BUFFER_SIZE `VENTAGLIO_BUFFER_SIZE `else 4096 `endif;
-  //localparam int unsigned VENTAGLIO_BUFFER_SIZE = `ifdef VENTAGLIO_BUFFER_SIZE `VENTAGLIO_BUFFER_SIZE `else 16384 `endif;
+  localparam int unsigned VENTAGLIO_BUFFER_SIZE = `ifdef VENTAGLIO_BUFFER_SIZE `VENTAGLIO_BUFFER_SIZE `else 8192 `endif;
 
   // wide datapath
   typedef logic [VENTAGLIO_WFACTOR*N_FU*ELENB-1:0] ventaglio_wide_be_t;

@@ -25,13 +25,13 @@ module ventaglio
     input  logic             spatz_req_valid_i,
     output logic             spatz_req_ready_o,
     input  logic             spatz_vfu_req_ready_i,
+    input  logic             vtl_index_preload_valid_i,
     // VTL response
     output logic             vtl_rsp_valid_o,
     output vsldu_rsp_t       vtl_rsp_o,
     // VFU response
     input  logic             vfu_rsp_valid_i,
     input  vfu_rsp_t         vfu_rsp_i,
-
     // Slave Write ports
     input  vrf_addr_t  [NrWritePorts-1:0]		waddr_i,
     input  vrf_data_t  [NrWritePorts-1:0]		wdata_i,
@@ -97,7 +97,6 @@ module ventaglio
   `FF(running_q, running_d, '0)
 
   // New instruction
-  // Initialize the internal state one cycle in advance
   logic new_vtl_request_d, new_vtl_request_q;
   assign new_vtl_request_d = spatz_req_valid && !running_q[spatz_req.id];
   `FF(new_vtl_request_q, new_vtl_request_d, '0)
@@ -113,9 +112,9 @@ module ventaglio
       running_d[spatz_req.id] = 1'b1; // mark the instruction as running
     end
 
+    // VTL serve as the co-unit for VPU -- sync the status
     if (running_q[vfu_rsp_i.id] && vfu_rsp_valid_i) begin // VFU finished this instruciton 
       running_d[vfu_rsp_i.id] = 1'b0;  // mark the instruction as finished
-      // spatz_req_ready         = 1'b1;
     end
     if (spatz_vfu_req_ready_i) begin
       spatz_req_ready         = 1'b1;
@@ -158,31 +157,66 @@ module ventaglio
     end
   end
 
-  // index is stored in VRef, which is mapped to VTL
-  vreg_t vidx;
-  always_comb begin
-    vidx = '0;
+  // `vidx` is the VRF id storing the indices
+  // This information is extracted from VLX or VFXMACC instructions 
+  // We cover two scenarios:
+  // 1. A new index is loaded with VLX                           --> use VLX info to load index 
+  // 2. Each VFXMACC operation requires more than 'VRFWordWidth' --> use VFX info to load index 
+  vreg_t vidx_d, vidx_q;
+  `FF(vidx_q, vidx_d, '0)
+  always_comb begin : proc_idx_addr_gen
+    vidx_d = vidx_q;
+    // For VLXMACC instructions
     if (spatz_req.op_vtl.gather_vs1) begin
-      vidx = spatz_req.vs1;
+      vidx_d = spatz_req.vs1;
     end else if (spatz_req.op_vtl.gather_vs2) begin 
-      vidx = spatz_req.vs2;
+      vidx_d = spatz_req.vs2;
     end else if (spatz_req.op_vtl.gather_vd || spatz_req.op_vtl.scatter_vd) begin
-      vidx = spatz_req.vd;
+      vidx_d = spatz_req.vd;
+    end
+
+    // For a VLX instruction
+    // VTL do not respond to the VLX instructions
+    // Simply record the VRF id for indices
+    if (spatz_req_valid_i && spatz_req_i.op_vtl.is_load_idx) begin
+      vidx_d = spatz_req_i.vd;
     end
 
     // address generation
-    vrf_raddr_o     = {vidx, $clog2(NrWordsPerVector)'(1'b0)} + vreg_idx_counter_q;
+    vrf_raddr_o     = {vidx_d, $clog2(NrWordsPerVector)'(1'b0)} + vreg_idx_counter_q;
     if (vreg_idx_counter_en)
-      vrf_raddr_o     = {vidx, $clog2(NrWordsPerVector)'(1'b0)} + vreg_idx_counter_q + 1'b1;
+      vrf_raddr_o     = {vidx_d, $clog2(NrWordsPerVector)'(1'b0)} + vreg_idx_counter_q + 1'b1;
   end
 
-  assign vrf_id_o[0]     = spatz_req.id; // ID of the instruction currently reading elements
-  // assign vrf_re_o        = spatz_req_valid && running_d[spatz_req.id];
-
   // Logic to issue the read request for loading indices
-  // 1. When a new spatz_req is received --> issue
-  // 2. PENDING: When the current indices is depleted
-  assign vrf_re_o        = spatz_req_valid && (running_d[spatz_req.id] && !index_valid_q);
+  // 1. When no gather/scatter is operating, and controller informed the index is ready
+  // 2. TODO: When the current indices is depleted
+
+  logic index_preload_valid_d, index_preload_valid_q;
+  `FF(index_preload_valid_q, index_preload_valid_d, '0)
+
+  always_comb begin 
+    index_preload_valid_d = index_preload_valid_q;
+    if (vtl_index_preload_valid_i) begin // controller informed the index is ready
+      index_preload_valid_d = 1'b1;
+    end 
+    // we read back an index vector 
+    // TODO: this is not correct!!! We do not consider the indices depletion scenario
+    if (vrf_rvalid_i) begin 
+      index_preload_valid_d = 1'b0;
+    end 
+  end 
+
+  logic index_preload, index_update;
+  // Nothing is running while the index is ready --> preload
+  assign index_preload = !(|running_q) && index_preload_valid_q;
+  // Have a valid operation, but no valid index
+  assign index_load    = spatz_req_valid && !index_valid_q;
+
+  assign vrf_re_o      = index_preload | index_load;
+  // This is not required, sudo ID used
+  // In controller, we do not check the dependency issued from VTL
+  assign vrf_id_o[0]     = spatz_req.id;
 
   /******************************/
   /*       Index Buffer         */ 
@@ -231,21 +265,14 @@ module ventaglio
 
   // signals for gather or scatter
   logic is_gather, is_scatter;
-  // always_comb begin
-  //   is_gather  = 1'b0;
-  //   is_scatter = 1'b0;
-  //   if (running_q[spatz_req.id]) begin // first check is this scatter/gather instruction is still running
-  //     is_gather  = (spatz_req.op_vtl.gather_vd || spatz_req.op_vtl.gather_vs1 || spatz_req.op_vtl.gather_vs2) && rgather_en_i;
-  //     is_scatter = spatz_req.op_vtl.scatter_vd && wscatter_en_i;
-  //   end
-  // end
+
+  // `rgather_en_i` and `wscatter_en_i` signals are attached in VRF bypass logic
   always_comb begin
     is_gather  = (spatz_req.op_vtl.gather_vd || spatz_req.op_vtl.gather_vs1 || spatz_req.op_vtl.gather_vs2) && rgather_en_i;
     is_scatter = spatz_req.op_vtl.scatter_vd && wscatter_en_i;
   end
 
   // write signals
-  // TODO: support more write port to make it more general
   vtg_row_addr_t          [VTGNrChannels-1:0] waddr;
   ventaglio_narrow_data_t [VTGNrChannels-1:0] wdata;
   logic                   [VTGNrChannels-1:0] we;
@@ -412,6 +439,7 @@ module ventaglio
     .wbe_o       (scatter_wbe),
     .wvalid_i    (scatter_wvalid),
     // control 
+    // TODO: it is better to implement as a counter to track
     .scatter_done_i      (!is_scatter),
     // controls
     .index_i       (index_q                ),

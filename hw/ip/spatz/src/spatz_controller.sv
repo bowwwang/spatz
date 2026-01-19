@@ -40,6 +40,7 @@ module spatz_controller
     // Spatz request
     output logic                                   spatz_req_valid_o,
     output spatz_req_t                             spatz_req_o,
+    output logic                                   vtl_index_preload_valid_o,
     // VFU
     input  logic                                   vfu_req_ready_i,
     input  logic                                   vfu_rsp_valid_i,
@@ -268,6 +269,7 @@ module spatz_controller
   // bowwang: vtl table to track if the indices used for scatter/gather is already in the VTL buffer
   typedef struct packed {
     logic                          use_vtl;
+    logic                    is_index_load;
     logic                      index_valid;
     logic   [NrWritePorts-1:0]       write;
     logic   [NrReadPorts-1:0]         read;
@@ -297,6 +299,12 @@ module spatz_controller
   // internal signal for sb_enable
   logic [NrVregfilePorts-1:0] sb_enable;
 
+  // signal to indicate the index is ready to use
+  // TODO: consider the renewal situation
+  logic vtl_index_preload_valid_d, vtl_index_preload_valid_q;
+  `FF(vtl_index_preload_valid_q, vtl_index_preload_valid_d, '0)
+  assign vtl_index_preload_valid_o = vtl_index_preload_valid_d;
+
   always_comb begin : scoreboard
     // Maintain stated
     read_table_d             = read_table_q;
@@ -305,8 +313,9 @@ module spatz_controller
     narrow_wide_d            = narrow_wide_q;
     wrote_result_narrowing_d = wrote_result_narrowing_q;
     vtl_table_d              = vtl_table_q;
-    sb_vtl_redirect_read_o   = '0;
-    sb_vtl_redirect_write_o  = '0;
+    vtl_index_preload_valid_d = vtl_index_preload_valid_q;
+    sb_vtl_redirect_read_o    = '0;
+    sb_vtl_redirect_write_o   = '0;
 
 
     // Nobody wrote to the VRF yet
@@ -327,8 +336,14 @@ module spatz_controller
       //                     2. The requested operand is in VTL
       //                     3. check is the index is ready or not
       sb_enable_o[port] = (vtl_en_q && vtl_table_q[sb_id_i[port]].use_vtl && vtl_table_wr[sb_id_i[port]][port]) ? (vtl_table_q[sb_id_i[port]].index_valid && sb_enable[port]) : sb_enable[port];
-      // fall through read request from VTL for index 
-      // sb_enable_o[SB_VSLDU_VS2_RD] = sb_enable_i[SB_VSLDU_VS2_RD];
+      
+      // VTL index preload logic
+      // scoreboard enable the read request from VTL, if the `vtl_index_preload_valid_q` is set
+      // We then set `vtl_index_preload_valid_d` to `0` indicating the index has been read
+      if (vtl_index_preload_valid_q) begin
+        sb_enable_o[SB_VSLDU_VS2_RD] = sb_enable_i[SB_VSLDU_VS2_RD];
+        vtl_index_preload_valid_d = 1'b0;
+      end
 
       if (sb_enable_o[port] && vtl_en_q) begin : proc_vtl_rw_o
         if (port < NrReadPorts) begin // read
@@ -387,6 +402,12 @@ module spatz_controller
           write_table_d[vreg] = '0;
       end
 
+      // VTL index preload logic
+      // if this is an index load instruction, inform VTL the index is ready
+      if (vtl_table_q[vlsu_rsp_i.id].is_index_load) begin
+        vtl_index_preload_valid_d = 1'b1;
+      end
+
       scoreboard_d[vlsu_rsp_i.id]             = '0;
       narrow_wide_d[vlsu_rsp_i.id]            = 1'b0;
       wrote_result_narrowing_d[vlsu_rsp_i.id] = 1'b0;
@@ -413,7 +434,7 @@ module spatz_controller
     // Initialize the scoreboard metadata if we have a new instruction issued.
     if (spatz_req_valid && spatz_req.ex_unit != CON) begin
       // VTL forward extension
-      vtl_table_d[spatz_req.id] = '{use_vtl: 1'b0, index_valid: 1'b0, write: '0, read: '0}; // init a table entry
+      vtl_table_d[spatz_req.id] = '{use_vtl: 1'b0, is_index_load: 1'b0, index_valid: 1'b0, write: '0, read: '0}; // init a table entry
       if (vtl_en_q) begin 
         case (spatz_req.ex_unit)
           VFU: begin
@@ -450,9 +471,13 @@ module spatz_controller
             if (spatz_req.use_vd && spatz_req.vd == VTLVreg_q && !spatz_req.op_vtl.is_load_idx && !spatz_req.op_mem.is_load) begin 
               vtl_table_d[spatz_req.id].read[SB_VLSU_VD_RD] = 1'b1; // r
             end 
+            // mark the index loading instruction
+            if (spatz_req.op_vtl.is_load_idx && spatz_req.op_mem.is_load) begin 
+              vtl_table_d[spatz_req.id].is_index_load = 1'b1; // r
+            end 
           end
           default: begin 
-            vtl_table_d[spatz_req.id] = '{use_vtl: 1'b0, index_valid: 1'b0, write: '0, read: '0};
+            vtl_table_d[spatz_req.id] = '{use_vtl: 1'b0, is_index_load: 1'b0, index_valid: 1'b0, write: '0, read: '0};
           end
         endcase
       end 
@@ -475,6 +500,9 @@ module spatz_controller
       if (spatz_req.use_vd) begin
         scoreboard_d[spatz_req.id].deps[write_table_d[spatz_req.vd].id] |= write_table_d[spatz_req.vd].valid;
         scoreboard_d[spatz_req.id].deps[read_table_d[spatz_req.vd].id] |= read_table_d[spatz_req.vd].valid;
+        if (spatz_req.op inside {VLX}) begin 
+          scoreboard_d[spatz_req.id].deps = '0;
+        end
         write_table_d[spatz_req.vd] = {spatz_req.id, 1'b1};
       end
 
@@ -514,6 +542,8 @@ module spatz_controller
   spatz_id_t                              next_insn_id;
   logic                                   running_insn_full;
   `FF(running_insn_q, running_insn_d, '0)
+  logic                                   insn_shortcut_en;
+  spatz_id_t                              insn_shortcut_id;
 
   find_first_one #(
     .WIDTH(NrParallelInstructions)
@@ -524,7 +554,7 @@ module spatz_controller
   );
 
   // Pop the buffer if we do not have a unit stall
-  assign req_buffer_pop = ~stall & req_buffer_valid && !running_insn_full;
+  assign req_buffer_pop = ~stall & req_buffer_valid && (!running_insn_full);
 
   // Issue new operation to execution units
   always_comb begin : ex_issue
@@ -535,7 +565,7 @@ module spatz_controller
     spatz_req.id          = next_insn_id;
     spatz_req_vtl_illegal = !vtl_en_q && decoder_rsp.spatz_req.op_vtl.use_vtl; // illegal if vtl is disabled but used
     spatz_req_illegal     = decoder_rsp_valid ? decoder_rsp.instr_illegal || spatz_req_vtl_illegal : 1'b0;
-    spatz_req_valid       = req_buffer_pop && !spatz_req_illegal && !running_insn_full;
+    spatz_req_valid       = req_buffer_pop && !spatz_req_illegal && (!running_insn_full);
 
     // We have a new instruction and there is no stall.
     if (spatz_req_valid) begin
@@ -599,12 +629,15 @@ module spatz_controller
       running_insn_d[next_insn_id] = 1'b1;
 
     // Finished a instruction
-    if (vfu_rsp_valid_i)
+    if (vfu_rsp_valid_i) begin 
       running_insn_d[vfu_rsp_i.id] = 1'b0;
-    if (vlsu_rsp_valid_i)
+    end 
+    if (vlsu_rsp_valid_i) begin 
       running_insn_d[vlsu_rsp_i.id] = 1'b0;
-    if (vsldu_rsp_valid_i)
+    end 
+    if (vsldu_rsp_valid_i) begin 
       running_insn_d[vsldu_rsp_i.id] = 1'b0;
+    end 
   end: proc_next_insn_id
 
   // Respond to core about the decoded instruction.

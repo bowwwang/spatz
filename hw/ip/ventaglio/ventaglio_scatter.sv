@@ -126,7 +126,7 @@ module ventaglio_scatter
 
   always_comb begin
   	index_d = index_q;
-  	if ( index_valid_i && ((beat_cnt_q == '0) || beat_cnt_q == NrBeatsPerInput - 1) ) begin 
+  	if ( index_valid_i && ((beat_cnt_q == '0) || scatter_done_i || beat_cnt_q == (NrBeatsPerInput-1)-1) ) begin 
   		index_d = index_i;
   	end 
   end
