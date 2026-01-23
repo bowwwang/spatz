@@ -234,11 +234,8 @@ package spatz_pkg;
 
     logic scatter_vd;
 
-    // sparsity-related
-    //sp_idxw_e  idx_width;      // index width (in bit)
-    //sp_blk_e   blk_size;       // block size (m in n:m format)
-    //sp_ratio_e ratio;          // sparsity ratio
-
+    vreg_t old_vd;
+    
     sp_cfg_t sp_cfg;
 
 

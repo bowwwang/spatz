@@ -257,6 +257,8 @@ module spatz import spatz_pkg::*; import rvv_pkg::*; import fpnew_pkg::*; #(
   logic      [NrWritePorts-1:0]             sb_we;
   spatz_id_t [NrReadPorts+NrWritePorts-1:0] sb_id;
 
+  vrf_addr_t vtl_index_raddr;
+
   // signal for VTL preloading indices
   logic vtl_index_preload_valid;
 
@@ -298,6 +300,9 @@ module spatz import spatz_pkg::*; import rvv_pkg::*; import fpnew_pkg::*; #(
     .vsldu_req_ready_i(vsldu_req_ready ),
     .vsldu_rsp_valid_i(vsldu_rsp_valid ),
     .vsldu_rsp_i      (vsldu_rsp       ),
+    // VTL index raddr handling
+    .vtl_raddr_i      (vtl_index_raddr        ),
+    .vtl_raddr_o      (vrf_raddr[VSLDU_VS2_RD]),
     // Scoreboard check
     .sb_id_i          (sb_id           ),
     .sb_wrote_result_i(vrf_wvalid      ),
@@ -429,7 +434,7 @@ module spatz import spatz_pkg::*; import rvv_pkg::*; import fpnew_pkg::*; #(
     .vrf_we_o         (sb_we[VSLDU_VD_WD]                             ),
     .vrf_wbe_o        (vrf_wbe[VSLDU_VD_WD]                           ),
     .vrf_wvalid_i     (vrf_wvalid[VSLDU_VD_WD]                        ),
-    .vrf_raddr_o      (vrf_raddr[VSLDU_VS2_RD]                        ),
+    .vrf_raddr_o      (vtl_index_raddr                                ),
     .vrf_re_o         (sb_re[VSLDU_VS2_RD]                            ),
     .vrf_rdata_i      (vrf_rdata[VSLDU_VS2_RD]                        ),
     .vrf_rvalid_i     (vrf_rvalid[VSLDU_VS2_RD]                       ),

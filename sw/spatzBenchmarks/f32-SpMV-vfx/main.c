@@ -27,7 +27,7 @@
 #define _INTERLEAVED_KERNEL (1)
 #define _IMPROVED_KERNEL    (2)
 
-#define _SEL_KERENL         (_IMPROVED_KERNEL)
+#define _SEL_KERENL         (_BASELINE_KERNEL)
 
 float     *a;          // activation vector
 float     *w;          // compact weight matrix 
@@ -144,7 +144,7 @@ int main() {
         // load scalar activation
         asm volatile("flw      ft0,  (%0)" ::"r"(_a));
         // load index 
-        asm volatile("vlx32.v v16,   (%0)" ::"r"(__nm_index));
+        asm volatile("vlx32.v v8,   (%0)" ::"r"(__nm_index));
         // load compact weight vector 
         asm volatile("vle32.v v8,    (%0)" ::"r"(__w));
         // index-macc

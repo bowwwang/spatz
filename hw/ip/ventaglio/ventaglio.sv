@@ -175,14 +175,14 @@ module ventaglio
     end else if (spatz_req.op_vtl.gather_vs2) begin 
       vidx_d = spatz_req.vs2;
     end else if (spatz_req.op_vtl.gather_vd || spatz_req.op_vtl.scatter_vd) begin
-      vidx_d = spatz_req.vd;
+      vidx_d = spatz_req.vs1; // bowwang: we now use vid(weight) to find vid(index) in controller
     end
 
     // For a VLX instruction
     // VTL do not respond to the VLX instructions
     // Simply record the VRF id for indices
     if (spatz_req_valid_i && spatz_req_i.op_vtl.is_load_idx) begin
-      vidx_d = spatz_req_i.vd;
+      vidx_d = spatz_req_i.op_vtl.old_vd;
     end
 
     // address generation

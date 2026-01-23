@@ -54,6 +54,9 @@ module spatz_controller
     input  logic                                   vsldu_req_ready_i,
     input  logic                                   vsldu_rsp_valid_i,
     input  vsldu_rsp_t                             vsldu_rsp_i,
+    // VTL
+    input  vrf_addr_t                              vtl_raddr_i,
+    output vrf_addr_t                              vtl_raddr_o,
     // VRF Scoreboard
     input  logic             [NrVregfilePorts-1:0]              sb_enable_i,
     input  logic             [NrWritePorts-1:0]                 sb_wrote_result_i,
@@ -82,20 +85,75 @@ module spatz_controller
   typedef logic [NRVREG-1:0] vid_t;
 
   // CSR registers
-  vlen_t  vstart_d, vstart_q;
-  vlen_t  vl_d, vl_q;
-  vtype_t vtype_d, vtype_q;
-  logic      vtl_en_d,        vtl_en_q;     // VTL extension enable 
-  // vreg_t     VTLVreg_d,       VTLVreg_q;    // VTL register setting
-  vid_t  VTLVreg_d,  VTLVreg_q; // bit mask for register mapping in VTL 
-  sp_cfg_t   VTL_cfg_d,       VTL_cfg_q;
+  vlen_t   vstart_d,  vstart_q;
+  vlen_t   vl_d,      vl_q;
+  vtype_t  vtype_d,   vtype_q;
+  logic    vtl_en_d,  vtl_en_q;     // VTL extension enable (1: VTL enabled; 0: VTL disabled) 
+  vid_t    VTLVreg_d, VTLVreg_q;    // Bit mask for register mapping in VTL (1: Vreg mapped to VTL)
+  vid_t    VTL_idx_occupied_Vreg_d, VTL_idx_occupied_Vreg_q; // Bit mask for register mapped for an index (1: occupied)
+  sp_cfg_t VTL_cfg_d, VTL_cfg_q;    // Formats
 
-  `FF(vstart_q, vstart_d, '0)
-  `FF(vl_q, vl_d, '0)
-  `FF(vtype_q, vtype_d, '{vill: 1'b1, vsew: EW_8, vlmul: LMUL_1, default: '0})
-  `FF(vtl_en_q, vtl_en_d, 1'b0)     // VTL extension enable 
+
+  `FF(vstart_q,  vstart_d,  '0)
+  `FF(vl_q,      vl_d,      '0)
+  `FF(vtype_q,   vtype_d,   '{vill: 1'b1, vsew: EW_8, vlmul: LMUL_1, default: '0})
+  `FF(vtl_en_q,  vtl_en_d, 1'b0)     // VTL extension enable 
+  `FF(VTL_idx_occupied_Vreg_q, VTL_idx_occupied_Vreg_d, '0)     // VTL register setting
   `FF(VTLVreg_q, VTLVreg_d, '0)     // VTL register setting
   `FF(VTL_cfg_q, VTL_cfg_d, '0)   
+
+  /////////////////////////////
+  // VTL Index Mapping Table //
+  /////////////////////////////
+
+  // To save the encoding space, we do not want to pass vid for index
+  // Index is stored in the vacant VReg spots, whose Vregs are mapped to VTL memory units
+  // Index is also tightly coupled with Weight matrix, so we assume programming model:
+  // vle32.v v8, addr_w;
+  // vlx32.v v8, addr_idx;
+  // Therefore, we need a VID table lookup to determine where is the index
+  // This table should be reset when a new VTL config arrives, and update with issuing a vlx instruction
+
+  typedef struct packed {
+    logic    valid;
+    vreg_t   index_vid;
+  } [NRVREG-1:0] vtl_index_mapping_t;
+
+  vtl_index_mapping_t vtl_index_mapping_d, vtl_index_mapping_q;
+  `FF(vtl_index_mapping_q, vtl_index_mapping_d, '0)
+
+  ////////////////////////////
+  // Index Addr Reconstruct //
+  ////////////////////////////
+  vreg_t vidx_old, vidx_new;
+  logic [$clog2(NrWordsPerVector)-1:0]      vidx_offset;
+
+  logic vidx_translation_valid;
+
+  always_comb begin : proc_vidx
+    vidx_offset = vtl_raddr_i[$clog2(NrWordsPerVector)-1  : 0];
+
+    vidx_old    = vtl_raddr_i[$clog2(NrWordsPerVector)   +: $clog2(NRVREG)];
+    vidx_new    = vtl_index_mapping_q[vidx_old].index_vid;
+
+    vidx_translation_valid = vtl_index_mapping_q[vidx_old].valid;
+
+    vtl_raddr_o = vidx_translation_valid ? {vidx_new, vidx_offset} : {vidx_old, vidx_offset};
+  end
+
+  ////////////////////////////////////
+  // Find the first valid index vid //
+  ////////////////////////////////////
+  vreg_t next_idx_id;
+
+  find_first_one #(
+    .WIDTH(NRVREG)
+  ) i_ffo_next_idx_id (
+    .in_i       (VTLVreg_q ^ VTL_idx_occupied_Vreg_q),
+    .first_one_o(next_idx_id                    ),
+    .no_ones_o  (/* NOT USED */)
+  );
+
 
   always_comb begin : proc_vcsr
     automatic logic [$clog2(MAXVL):0] vlmax = 0;
@@ -106,6 +164,7 @@ module spatz_controller
     vtl_en_d   = vtl_en_q;   // VTL extension enable
     VTLVreg_d  = VTLVreg_q;
     VTL_cfg_d  = VTL_cfg_q;
+    vtl_index_mapping_d = vtl_index_mapping_q;
 
     if (spatz_req_valid) begin
       // Reset vstart to zero if we have a new non CSR operation
@@ -122,11 +181,13 @@ module spatz_controller
         end else if (spatz_req.op_cfg.clear_vstart) begin
           vstart_d = vstart_q & ~vlen_t'(spatz_req.rs1);
         end else if (spatz_req.op_cfg.vtl_redirect) begin // For the VTL extensions
+          vtl_index_mapping_d = '0;                       // reset vid mapping table
           if (vtl_en_q && (VTLVreg_q == vid_t'(spatz_req.rs1))) begin 
-            vtl_en_d  = 1'b0;                   // Disable if the same register is written again
+            vtl_en_d            = 1'b0;                   // Disable if the same register is written again
+            VTLVreg_d           =   '0;
           end else begin
             vtl_en_d  = 1'b1;
-            VTLVreg_d = vid_t'(spatz_req.rs1); // Set which register is mapped to VTL
+            VTLVreg_d = vid_t'(spatz_req.rs1);            // Set which registers are mapped to VTL
           end
         end else if (spatz_req.op_cfg.set_vtl_index_width) begin 
           VTL_cfg_d.sp_cfg_index_width = sp_idxw_e'(spatz_req.rs1); 
@@ -136,6 +197,12 @@ module spatz_controller
           VTL_cfg_d.sp_cfg_ratio       = sp_ratio_e'(spatz_req.rs1); 
         end
       end // spatz_req.op == VCSR
+
+      // set vreg mapping upon receiving a vlx insn
+      if (spatz_req.op == VLX) begin 
+        vtl_index_mapping_d[spatz_req.op_vtl.old_vd].valid     = 1'b1;
+        vtl_index_mapping_d[spatz_req.op_vtl.old_vd].index_vid = vtl_index_mapping_q[spatz_req.op_vtl.old_vd].valid ? vtl_index_mapping_q[spatz_req.op_vtl.old_vd].index_vid : next_idx_id; // TODO: need to check first avail
+      end 
 
       // Change vtype and vl if we have a config instruction
       if (spatz_req.op == VCFG) begin
@@ -268,7 +335,11 @@ module spatz_controller
   scoreboard_metadata_t [NrParallelInstructions-1:0] scoreboard_q, scoreboard_d;
   `FF(scoreboard_q, scoreboard_d, '0)
 
-  // bowwang: vtl table to track if the indices used for scatter/gather is already in the VTL buffer
+  ///////////////
+  // VTL Table //
+  ///////////////
+
+  // To track if the indices used for scatter/gather is already in the VTL buffer
   typedef struct packed {
     logic                          use_vtl;
     logic                    is_index_load;
@@ -279,12 +350,16 @@ module spatz_controller
   vtl_table_t [NrParallelInstructions-1:0] vtl_table_d, vtl_table_q;
   `FF(vtl_table_q, vtl_table_d, '{default: '0})
 
+  // For better wiring
   logic [NrParallelInstructions-1:0][NrVregfilePorts-1:0] vtl_table_wr;
   always_comb begin
     for (int id = 0; id < NrParallelInstructions; id++) begin
       vtl_table_wr[id] = {vtl_table_q[id].write, vtl_table_q[id].read};
     end
   end
+
+  
+
 
   // Did the instruction write to the VRF in the previous cycle?
   logic [NrParallelInstructions-1:0] wrote_result_q, wrote_result_d;
@@ -451,13 +526,10 @@ module spatz_controller
             // Let's say if v8 is mapped to VTL
             // for an instruction do not use VTL, v8 is still in Vregfile
             // This is distinguished from spatz_req.op_vtl settings
-            // if (spatz_req.use_vs1   && spatz_req.vs1 == VTLVreg_q) 
             if (spatz_req.use_vs1   && |((32'b1 << spatz_req.vs1) & VTLVreg_q) ) // VFU read: vs1
               vtl_table_d[spatz_req.id].read[SB_VFU_VS1_RD] = 1'b1;
-            // if (spatz_req.use_vs2   && spatz_req.vs2 == VTLVreg_q) 
             if (spatz_req.use_vs2   && |((32'b1 << spatz_req.vs2) & VTLVreg_q) ) // VFU read: vs2
               vtl_table_d[spatz_req.id].read[SB_VFU_VS2_RD] = 1'b1;
-            // if (spatz_req.vd_is_src && spatz_req.vd == VTLVreg_q) 
             if (spatz_req.vd_is_src && |((32'b1 << spatz_req.vd) & VTLVreg_q) ) // VFU read: vd
               vtl_table_d[spatz_req.id].read[SB_VFU_VD_RD] = 1'b1;
             if (spatz_req.use_vd    && |((32'b1 << spatz_req.vd) & VTLVreg_q) )   // VFU write: vd
@@ -470,7 +542,6 @@ module spatz_controller
 
             // Normal ld/st instructions are considered
             // `vlx` instructions never map to VTL 
-            // if (spatz_req.use_vd && spatz_req.vd == VTLVreg_q && !spatz_req.op_vtl.is_load_idx && spatz_req.op_mem.is_load) begin 
             if (spatz_req.use_vd && |((32'b1 << spatz_req.vd) & VTLVreg_q) && !spatz_req.op_vtl.is_load_idx && spatz_req.op_mem.is_load) begin 
               vtl_table_d[spatz_req.id].write[SB_VLSU_VD_WD-NrReadPorts] = 1'b1; // w
             end 
@@ -566,6 +637,8 @@ module spatz_controller
   always_comb begin : ex_issue
     retire_csr = 1'b0;
 
+    VTL_idx_occupied_Vreg_d = VTL_idx_occupied_Vreg_q;
+
     // Define new spatz request
     spatz_req             = buffer_spatz_req;
     spatz_req.id          = next_insn_id;
@@ -603,6 +676,10 @@ module spatz_controller
           if (vtl_en_q) begin 
             spatz_req.op_vtl.sp_cfg = VTL_cfg_q;
           end
+          if (spatz_req.op == VLX) begin 
+            spatz_req.vd = (vtl_index_mapping_q[spatz_req.op_vtl.old_vd].valid) ? vtl_index_mapping_q[spatz_req.op_vtl.old_vd].index_vid : next_idx_id;                               // TODO: need to check avail
+            VTL_idx_occupied_Vreg_d[spatz_req.op_vtl.old_vd] = 1'b1;  // TODO: this reg also need to be rest when VTL cfg
+          end 
         end
 
         SLD: begin

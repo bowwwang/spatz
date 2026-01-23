@@ -135,10 +135,11 @@ module spatz_decoder
             riscv_instr::VLX64_V: begin
               spatz_req.op                 = VLX;
               spatz_req.op_mem.is_load     = 1'b1;
-              spatz_req.vd                 = ls_vd;
+              // spatz_req.vd                 = ls_vd;
               spatz_req.use_vd             = 1'b1;
               spatz_req.rs1                = decoder_req_i.rs1;
               spatz_req.op_vtl.is_load_idx = 1'b1;
+              spatz_req.op_vtl.old_vd      = ls_vd;
               illegal_instr        = 1'b0;
               // Retrieve VSEW
               unique case ({ls_mew, ls_width})
