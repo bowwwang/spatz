@@ -27,7 +27,7 @@
 #define _INTERLEAVED_KERNEL (1)
 #define _IMPROVED_KERNEL    (2)
 
-#define _SEL_KERENL         (_BASELINE_KERNEL)
+#define _SEL_KERENL         (_IMPROVED_KERNEL)
 
 float     *a;          // activation vector
 float     *w;          // compact weight matrix 
@@ -35,6 +35,7 @@ uint32_t  *nm_index;   // index matrix
 float     *golden;     // expected output vector
 float     *res;        // computation results
 float     *zeros;      // TEMP: to init the VTL memory unit
+float     *tmp0, *tmp1; 
 
 static inline int fp32_check(float *a, float *b) {
   const float threshold = 0.001f;
@@ -55,6 +56,28 @@ static inline int fp32_check(float *a, float *b) {
   printf("COMP - %8x \n", *(int32_t *)&comp);
 
   return comp > threshold;
+}
+
+// Runtime helper function to config vreg mapping
+// Accepted values: [0:31]
+
+static inline uint32_t bit_if_valid(uint32_t vr) {
+  return (vr < 32) ? (1u << vr) : 0u;
+}
+
+static inline void vtl_cfg (uint32_t vr0, uint32_t vr1, uint32_t vr2, uint32_t vr3) {
+  uint32_t vreg_bitmap =
+      bit_if_valid(vr0) |
+      bit_if_valid(vr1) |
+      bit_if_valid(vr2) |
+      bit_if_valid(vr3);
+
+  asm volatile(
+      "csrrw  x0, 0x7c3, %0\n" // v16 is in VTL to gather and scatter
+      :
+      : "r" (vreg_bitmap)
+      : "memory"
+    );
 }
 
 int main() {
@@ -89,8 +112,10 @@ int main() {
     unsigned int vl, svl, savl;
     unsigned int avl  = P_W;
 
+    vtl_cfg(16, 20, 24, 28);
+
     asm volatile(
-      "csrrwi x0, 0x7c3, 16\n" // v16 is in VTL to gather and scatter
+      // "csrrwi x0, 0x7c3, 16\n" // v16 is in VTL to gather and scatter
       "csrrwi x0, 0x7c4, 1\n"  // set idx width to 2-bit
       "csrrwi x0, 0x7c5, 1\n"  // set blk size to 4
       "csrrwi x0, 0x7c6, 1\n"  // set sparse ratio to 50%
@@ -104,7 +129,7 @@ int main() {
 
     do {
       // Outer loop, P dimension
-      asm volatile("vsetvli %0, %1, e32, m8, ta, ma" : "=r"(vl) : "r"(avl));
+      asm volatile("vsetvli %0, %1, e32, m4, ta, ma" : "=r"(vl) : "r"(avl));
 
       // pointers for inner loop
       float    * _a        = a;
@@ -154,7 +179,31 @@ int main() {
       // IMPROVED_KERNEL implementation //
       ////////////////////////////////////
       #if _SEL_KERENL == _IMPROVED_KERNEL
+      for (uint32_t n = 0; n < N-1; n+=2){
+        // load scalar activation
+        asm volatile("flw      ft0,  (%0)" ::"r"(_a));
+        // load index 
+        asm volatile("vlx32.v v16,   (%0)" ::"r"(__nm_index));
+        // load compact weight vector 
+        asm volatile("vle32.v v8,    (%0)" ::"r"(__w));
+        _a         += 1;
+        __w        += P_W;
+        // index-macc
+        asm volatile("vfxmacc.vf v16, ft0, v8" ::);
+        __nm_index += NM_INDEX_ROW_WORDS;
 
+        // load scalar activation
+        asm volatile("flw      ft1,  (%0)" ::"r"(_a));
+        // load index 
+        asm volatile("vlx32.v v16,   (%0)" ::"r"(__nm_index));
+        // load compact weight vector 
+        asm volatile("vle32.v v12,    (%0)" ::"r"(__w));
+        _a         += 1;
+        __w        += P_W;
+        // index-macc
+        asm volatile("vfxmacc.vf v16, ft1, v12" ::);
+        __nm_index += NM_INDEX_ROW_WORDS;
+      }
       #endif 
 
       // move out
