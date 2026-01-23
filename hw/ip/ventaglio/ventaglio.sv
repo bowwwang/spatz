@@ -72,6 +72,8 @@ module ventaglio
   logic       spatz_req_valid;
   logic       spatz_req_ready;
 
+
+
   spill_register #(
     .T(spatz_req_t)
   ) i_operation_queue (
@@ -84,6 +86,7 @@ module ventaglio
     .valid_o(spatz_req_valid                                                              ),
     .ready_i(spatz_req_ready                                                              )
   );
+
 
   always_comb begin : proc_spatz_req
     spatz_req_d = spatz_req_i;
@@ -265,6 +268,8 @@ module ventaglio
 
   // signals for gather or scatter
   logic is_gather, is_scatter;
+  logic gather_done;
+  `FF(gather_done, spatz_vfu_req_ready_i&&spatz_req_valid, '0)
 
   // `rgather_en_i` and `wscatter_en_i` signals are attached in VRF bypass logic
   always_comb begin
@@ -504,7 +509,7 @@ module ventaglio
     .rdata_i     (gather_rdata         ),
     .rvalid_i    (gather_rvalid        ),
     // control
-    .gather_done_i(!is_gather          ),
+    .gather_done_i(gather_done          ),
     // index cfg
     .index_i     (index_q              ),
     .vtl_cfg_i   (spatz_req.op_vtl.sp_cfg),

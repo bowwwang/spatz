@@ -79,13 +79,15 @@ module spatz_controller
   //////////
   // CSRs //
   //////////
+  typedef logic [NRVREG-1:0] vid_t;
 
   // CSR registers
   vlen_t  vstart_d, vstart_q;
   vlen_t  vl_d, vl_q;
   vtype_t vtype_d, vtype_q;
   logic      vtl_en_d,        vtl_en_q;     // VTL extension enable 
-  vreg_t     VTLVreg_d,       VTLVreg_q;    // VTL register setting
+  // vreg_t     VTLVreg_d,       VTLVreg_q;    // VTL register setting
+  vid_t  VTLVreg_d,  VTLVreg_q; // bit mask for register mapping in VTL 
   sp_cfg_t   VTL_cfg_d,       VTL_cfg_q;
 
   `FF(vstart_q, vstart_d, '0)
@@ -120,11 +122,11 @@ module spatz_controller
         end else if (spatz_req.op_cfg.clear_vstart) begin
           vstart_d = vstart_q & ~vlen_t'(spatz_req.rs1);
         end else if (spatz_req.op_cfg.vtl_redirect) begin // For the VTL extensions
-          if (vtl_en_q && (VTLVreg_q == vreg_t'(spatz_req.rs1))) begin 
+          if (vtl_en_q && (VTLVreg_q == vid_t'(spatz_req.rs1))) begin 
             vtl_en_d  = 1'b0;                   // Disable if the same register is written again
           end else begin
             vtl_en_d  = 1'b1;
-            VTLVreg_d = vlen_t'(spatz_req.rs1); // Set which register is mapped to VTL
+            VTLVreg_d = vid_t'(spatz_req.rs1); // Set which register is mapped to VTL
           end
         end else if (spatz_req.op_cfg.set_vtl_index_width) begin 
           VTL_cfg_d.sp_cfg_index_width = sp_idxw_e'(spatz_req.rs1); 
@@ -449,13 +451,16 @@ module spatz_controller
             // Let's say if v8 is mapped to VTL
             // for an instruction do not use VTL, v8 is still in Vregfile
             // This is distinguished from spatz_req.op_vtl settings
-            if (spatz_req.use_vs1   && spatz_req.vs1 == VTLVreg_q) // VFU read: vs1
+            // if (spatz_req.use_vs1   && spatz_req.vs1 == VTLVreg_q) 
+            if (spatz_req.use_vs1   && |((32'b1 << spatz_req.vs1) & VTLVreg_q) ) // VFU read: vs1
               vtl_table_d[spatz_req.id].read[SB_VFU_VS1_RD] = 1'b1;
-            if (spatz_req.use_vs2   && spatz_req.vs2 == VTLVreg_q) // VFU read: vs2
+            // if (spatz_req.use_vs2   && spatz_req.vs2 == VTLVreg_q) 
+            if (spatz_req.use_vs2   && |((32'b1 << spatz_req.vs2) & VTLVreg_q) ) // VFU read: vs2
               vtl_table_d[spatz_req.id].read[SB_VFU_VS2_RD] = 1'b1;
-            if (spatz_req.vd_is_src && spatz_req.vd == VTLVreg_q) // VFU read: vd
+            // if (spatz_req.vd_is_src && spatz_req.vd == VTLVreg_q) 
+            if (spatz_req.vd_is_src && |((32'b1 << spatz_req.vd) & VTLVreg_q) ) // VFU read: vd
               vtl_table_d[spatz_req.id].read[SB_VFU_VD_RD] = 1'b1;
-            if (spatz_req.use_vd    && spatz_req.vd == VTLVreg_q)   // VFU write: vd
+            if (spatz_req.use_vd    && |((32'b1 << spatz_req.vd) & VTLVreg_q) )   // VFU write: vd
               vtl_table_d[spatz_req.id].write[SB_VFU_VD_WD-NrReadPorts] = 1'b1;
           end
           LSU: begin
@@ -465,10 +470,11 @@ module spatz_controller
 
             // Normal ld/st instructions are considered
             // `vlx` instructions never map to VTL 
-            if (spatz_req.use_vd && spatz_req.vd == VTLVreg_q && !spatz_req.op_vtl.is_load_idx && spatz_req.op_mem.is_load) begin 
+            // if (spatz_req.use_vd && spatz_req.vd == VTLVreg_q && !spatz_req.op_vtl.is_load_idx && spatz_req.op_mem.is_load) begin 
+            if (spatz_req.use_vd && |((32'b1 << spatz_req.vd) & VTLVreg_q) && !spatz_req.op_vtl.is_load_idx && spatz_req.op_mem.is_load) begin 
               vtl_table_d[spatz_req.id].write[SB_VLSU_VD_WD-NrReadPorts] = 1'b1; // w
             end 
-            if (spatz_req.use_vd && spatz_req.vd == VTLVreg_q && !spatz_req.op_vtl.is_load_idx && !spatz_req.op_mem.is_load) begin 
+            if (spatz_req.use_vd && |((32'b1 << spatz_req.vd) & VTLVreg_q) && !spatz_req.op_vtl.is_load_idx && !spatz_req.op_mem.is_load) begin 
               vtl_table_d[spatz_req.id].read[SB_VLSU_VD_RD] = 1'b1; // r
             end 
             // mark the index loading instruction

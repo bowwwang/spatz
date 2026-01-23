@@ -86,7 +86,7 @@ module ventaglio_gather
 
   logic beat_cnt_en;
   assign addr_last_bit_d = raddr_i[0];
-  assign beat_cnt_en = (!gather_done_i) && (addr_last_bit_d ^ addr_last_bit_q);
+  assign beat_cnt_en = (!gather_done_i) && (addr_last_bit_d ^ addr_last_bit_q) && re_i;
 
   // progress counter (we need to use beat_cnt_d to select effective index chunk)
   // assign beat_cnt_d = (beat_cnt_en) ? beat_cnt_q + 1 : beat_cnt_q;
