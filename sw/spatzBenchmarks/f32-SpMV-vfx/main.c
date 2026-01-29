@@ -118,7 +118,7 @@ int main() {
       // "csrrwi x0, 0x7c3, 16\n" // v16 is in VTL to gather and scatter
       "csrrwi x0, 0x7c4, 1\n"  // set idx width to 2-bit
       "csrrwi x0, 0x7c5, 1\n"  // set blk size to 4
-      "csrrwi x0, 0x7c6, 1\n"  // set sparse ratio to 50%
+      "csrrwi x0, 0x7c6, 2\n"  // set sparse ratio to 50%
       ::: "memory"
     );
 
