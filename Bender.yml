@@ -135,6 +135,8 @@ sources:
       files:
         - hw/ip/spatz/src/vregfile.sv
         - hw/ip/ventaglio/ventaglio_regfile.sv
+        - hw/ip/ventaglio/ventaglio_gather_datapath.sv
+        - hw/ip/ventaglio/ventaglio_scatter_datapath.sv
         - hw/ip/ventaglio/ventaglio_scatter.sv
         - hw/ip/ventaglio/ventaglio_gather.sv
     # Level 3

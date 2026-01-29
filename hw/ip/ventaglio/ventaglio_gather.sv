@@ -51,24 +51,23 @@ module ventaglio_gather
   		SP_RATIO_050: begin 
   			// one read request will map to 2 channels
   			raddr = raddr_i << 1;
-			raddr_o[0] = {raddr[$clog2(NrVRFWords)-1:1], 1'b0};
-			raddr_o[1] = {raddr[$clog2(NrVRFWords)-1:1], 1'b1};
-			if (re_i)
-				re_o[1:0] = 2'b11;
-  		end 
+				raddr_o[0] = {raddr[$clog2(NrVRFWords)-1:1], 1'b0};
+				raddr_o[1] = {raddr[$clog2(NrVRFWords)-1:1], 1'b1};
+				if (re_i)
+					re_o[1:0] = 2'b11;
+  		end 		
   		SP_RATIO_025: begin 
   			raddr = raddr_i << 2;
   			raddr_o[0] = {raddr[$clog2(NrVRFWords)-1:2], 2'b00};
-			raddr_o[1] = {raddr[$clog2(NrVRFWords)-1:2], 2'b01};
-			raddr_o[2] = {raddr[$clog2(NrVRFWords)-1:2], 2'b10};
-			raddr_o[3] = {raddr[$clog2(NrVRFWords)-1:2], 2'b11};
+				raddr_o[1] = {raddr[$clog2(NrVRFWords)-1:2], 2'b01};
+				raddr_o[2] = {raddr[$clog2(NrVRFWords)-1:2], 2'b10};
+				raddr_o[3] = {raddr[$clog2(NrVRFWords)-1:2], 2'b11};
 			if (re_i)
 				re_o = '1;
 		end 
-  		default:      raddr = raddr_i;      // need to consider more cased
+  		default: raddr = raddr_i;      // need to consider more cased
   	endcase // vtl_cfg_i.sp_cfg_ratio
   end // proc_read_addr
-
 
   ////////////////////////////
   //      gather logic      //
@@ -88,72 +87,68 @@ module ventaglio_gather
   assign addr_last_bit_d = raddr_i[0];
   assign beat_cnt_en = (!gather_done_i) && (addr_last_bit_d ^ addr_last_bit_q) && re_i;
 
-  // progress counter (we need to use beat_cnt_d to select effective index chunk)
-  // assign beat_cnt_d = (beat_cnt_en) ? beat_cnt_q + 1 : beat_cnt_q;
+  vrf_data_t rdata_050, rdata_025;
+  logic      rvalid_050, rvalid_025;
+  logic      load_index_050, load_index_025;
 
-  // TODO: support more format
-  // For testing, we focus on 16-bit ele and 2-bit index (2:4)
-  // whcih means we are gathering 16 elements per 256-bit, and each has 2-bit index
+  ventaglio_gather_datapath #(
+    .NrEffElePerBlk(2),
+    .NrElePerBlk   (4),
+    .NrCh          (2),
+    .IdxWidth      (2),
+    .EleWidth      (32)
+  ) i_core_2of4 (
+    .clk_i, 
+    .rst_ni,
+    .gather_done_i,
+    .re_i, 
+    .raddr_i,
+    .index_i,
+    .rdata_i, 
+    .rvalid_i,
+    .rdata_o      (rdata_050),
+    .rvalid_o     (rvalid_050),
+    .load_index_o (load_index_050)
+  );
 
-  localparam int unsigned NrEffElePerBlk  = 2; 
-  localparam int unsigned NrElePerBlk     = 4; 
+  ventaglio_gather_datapath #(
+    .NrEffElePerBlk(1),  // <-- key change for 1:4
+    .NrElePerBlk   (4),
+    .NrCh          (4),  // <-- key change for 1:4
+    .IdxWidth      (2),
+    .EleWidth      (32)
+  ) i_core_1of4 (
+    .clk_i, .rst_ni,
+    .gather_done_i,
+    .re_i, .raddr_i,
+    .index_i,
+    .rdata_i, .rvalid_i,
+    .rdata_o      (rdata_025),
+    .rvalid_o     (rvalid_025),
+    .load_index_o (load_index_025)
+  );
 
-  localparam int unsigned IdxWidth        = 2;
-  localparam int unsigned EleWidth        = 32;
 
-  localparam int unsigned NrBlksPerBeat   = VRFWordWidth / (NrEffElePerBlk * EleWidth);
-  // localparam int unsigned NrBeatsPerInput = VRFWordWidth / (NrBlksPerBeat * NrEffElePerBlk * IdxWidth);
-  localparam int unsigned NrBeatsPerInput =  EleWidth / IdxWidth;
-
-  // handle the index loading 
+  // Select active format
   always_comb begin
-  	load_index_o = 0;
-  	beat_cnt_d   = beat_cnt_q;
-  	if (beat_cnt_en) begin
-  		if (beat_cnt_q == NrBeatsPerInput-1) begin
-  			beat_cnt_d   = '0;
-  			load_index_o = 1;
-  		end else begin
-  			beat_cnt_d = beat_cnt_q + 1'b1;
-  		end
-  	end
-  	if (gather_done_i) beat_cnt_d   = '0;
+    unique case (vtl_cfg_i.sp_cfg_ratio)
+      SP_RATIO_050: begin
+        rdata_o      = rdata_050;
+        rvalid_o     = rvalid_050;
+        load_index_o = load_index_050;
+      end
+      SP_RATIO_025: begin
+        rdata_o      = rdata_025;
+        rvalid_o     = rvalid_025;
+        load_index_o = load_index_025;
+      end
+      default: begin
+        rdata_o      = '0;
+        rvalid_o     = 1'b0;
+        load_index_o = 1'b0;
+      end
+    endcase
   end
-
-  logic [NrBeatsPerInput-1:0][NrBlksPerBeat-1:0][NrEffElePerBlk-1:0][IdxWidth-1:0] idx;
-  for (genvar beat = 0; beat < NrBeatsPerInput; beat++) begin
-  	for (genvar	blk = 0; blk < NrBlksPerBeat; blk++) begin 
-  		for (genvar ele = 0; ele < NrEffElePerBlk; ele++) begin
-  			assign idx[beat][blk][ele] = index_i[beat*NrBlksPerBeat*NrEffElePerBlk*IdxWidth + blk*NrEffElePerBlk*IdxWidth + ele*IdxWidth +: IdxWidth];
-  		end
-  	end 
-  end
-
-  // flatten the read data(here we once again focus on 2:4)
-  logic [VRFWordWidth*2-1:0] flatten_rdata;
-  for (genvar channel=0; channel < 2; channel++) begin
-  	assign flatten_rdata[channel*VRFWordWidth +: VRFWordWidth] = rdata_i[channel];
-  end
-
-  // organize the pre-gather data into blocks
-  logic [NrBlksPerBeat-1:0][NrElePerBlk-1:0][EleWidth-1:0] rdata_pre_gather;
-  for (genvar blk = 0; blk < NrBlksPerBeat; blk++) begin
-  	for (genvar ele = 0; ele < NrElePerBlk; ele++) begin
-  		assign rdata_pre_gather[blk][ele] = flatten_rdata[blk*NrElePerBlk*EleWidth + ele*EleWidth +: EleWidth];
-  	end
-  end
-
-  // organize the post-gather data into blocks
-  logic [NrBlksPerBeat-1:0][NrEffElePerBlk-1:0][EleWidth-1:0] rdata_post_gather;
-  for (genvar blk = 0; blk < NrBlksPerBeat; blk++) begin
-  	for (genvar ele = 0; ele < NrEffElePerBlk; ele++) begin
-  		assign rdata_post_gather[blk][ele] = rdata_pre_gather[blk][ idx[beat_cnt_d][blk][ele] ];
-  		assign rdata_o[blk*NrEffElePerBlk*EleWidth + ele*EleWidth +: EleWidth] = rdata_post_gather[blk][ele];
-  	end
-  end
-
-  // valid signal propogate 
-  assign rvalid_o = (vtl_cfg_i.sp_cfg_ratio == SP_RATIO_050) ? &rvalid_i[1:0] : &rvalid_i;
 
 
 endmodule : ventaglio_gather
