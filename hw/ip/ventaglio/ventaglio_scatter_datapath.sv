@@ -11,6 +11,9 @@ module ventaglio_scatter_datapath
   input  logic                               clk_i,
   input  logic                               rst_ni,
 
+  // NEW: gate activity (only active ratio should advance state / request loads)
+  input  logic                               active_i,
+
   input  logic                               scatter_done_i,
   input  logic                               we_i,
   input  vrf_addr_t                          waddr_i,
@@ -20,6 +23,12 @@ module ventaglio_scatter_datapath
 
   input  vrf_data_t                          index_i,
   input  logic                               index_valid_i,
+
+  // NEW: shared registered index from top
+  input  vrf_data_t                          index_q_i,
+
+  // NEW: request to load the shared index register in top
+  output logic                               index_load_req_o,
 
   input  logic      [VENTAGLIO_WFACTOR-1:0]  wvalid_i,
 
@@ -40,43 +49,53 @@ module ventaglio_scatter_datapath
   `FF(addr_last_bit_q, addr_last_bit_d, '0)
 
   logic beat_cnt_en;
-  assign addr_last_bit_d = waddr_i[0];
-  // (mirrors gather style: only advance on actual traffic)
-  assign beat_cnt_en = (!scatter_done_i) && (addr_last_bit_d ^ addr_last_bit_q) && we_i;
+
+  // Freeze addr_last_bit when inactive so it doesn't drift
+  assign addr_last_bit_d = active_i ? waddr_i[0] : addr_last_bit_q;
+
+  // Only advance on traffic when active
+  assign beat_cnt_en = active_i
+                    && (!scatter_done_i)
+                    && (addr_last_bit_d ^ addr_last_bit_q)
+                    && we_i;
 
   localparam int unsigned EleWidthB       = EleWidth / 8;
   localparam int unsigned NrBlksPerBeat   = (VRFWordWidth * NrCh) / (NrElePerBlk * EleWidth);
   localparam int unsigned NrBeatsPerInput = EleWidth / IdxWidth;
 
   always_comb begin
+    // Default hold
     beat_cnt_d = beat_cnt_q;
 
-    if (beat_cnt_en) begin
-      if (beat_cnt_q == NrBeatsPerInput-1) begin
-        beat_cnt_d = '0;
-      end else begin
-        beat_cnt_d = beat_cnt_q + 1'b1;
+    // Keep counters quiescent when inactive (safe re-entry)
+    if (!active_i) begin
+      beat_cnt_d = '0;
+    end else begin
+      if (beat_cnt_en) begin
+        if (beat_cnt_q == NrBeatsPerInput-1) begin
+          beat_cnt_d = '0;
+        end else begin
+          beat_cnt_d = beat_cnt_q + 1'b1;
+        end
       end
-    end
 
-    if (scatter_done_i) beat_cnt_d = '0;
+      if (scatter_done_i) beat_cnt_d = '0;
+    end
   end
 
   ////////////////////////////
-  //      index buffer      //
+  //   shared index request //
   ////////////////////////////
-  vrf_data_t index_d, index_q;
-  `FF(index_q, index_d, '0)
-
+  // Preserve your original “refresh” conditions as a request to top-level FF
   always_comb begin
-    index_d = index_q;
+    index_load_req_o = 1'b0;
 
-    // preserve your original “refresh” conditions (write side is delayed)
-    if ( index_valid_i
-         && ( (beat_cnt_q == '0)
-              || scatter_done_i
-              || (beat_cnt_q == (NrBeatsPerInput-1)-1) ) ) begin
-      index_d = index_i;
+    if (active_i
+        && index_valid_i
+        && ( (beat_cnt_q == '0)
+             || scatter_done_i
+             || (beat_cnt_q == (NrBeatsPerInput-1)-1) ) ) begin
+      index_load_req_o = 1'b1;
     end
   end
 
@@ -84,15 +103,15 @@ module ventaglio_scatter_datapath
   //     scatter logic      //
   ////////////////////////////
 
-  // Unpack indices
+  // Unpack indices from shared registered index
   logic [NrBeatsPerInput-1:0][NrBlksPerBeat-1:0][NrEffElePerBlk-1:0][IdxWidth-1:0] idx;
   for (genvar beat = 0; beat < NrBeatsPerInput; beat++) begin
     for (genvar blk = 0; blk < NrBlksPerBeat; blk++) begin
       for (genvar ele = 0; ele < NrEffElePerBlk; ele++) begin
         assign idx[beat][blk][ele] =
-          index_q[beat*NrBlksPerBeat*NrEffElePerBlk*IdxWidth +
-                  blk*NrEffElePerBlk*IdxWidth +
-                  ele*IdxWidth +: IdxWidth];
+          index_q_i[beat*NrBlksPerBeat*NrEffElePerBlk*IdxWidth +
+                    blk*NrEffElePerBlk*IdxWidth +
+                    ele*IdxWidth +: IdxWidth];
       end
     end
   end
@@ -118,16 +137,18 @@ module ventaglio_scatter_datapath
     wdata_post_scatter = '0;
     wbe_post_scatter   = '0;
 
-    for (int blk = 0; blk < NrBlksPerBeat; blk++) begin
-      for (int ele = 0; ele < NrEffElePerBlk; ele++) begin
-        wdata_post_scatter[blk][ idx[beat_cnt_d][blk][ele] ] = wdata_pre_scatter[blk][ele];
-        wbe_post_scatter[blk][ idx[beat_cnt_d][blk][ele] ]   = wbe_pre_scatter[blk][ele];
+    if (active_i) begin
+      for (int blk = 0; blk < NrBlksPerBeat; blk++) begin
+        for (int ele = 0; ele < NrEffElePerBlk; ele++) begin
+          wdata_post_scatter[blk][ idx[beat_cnt_d][blk][ele] ] = wdata_pre_scatter[blk][ele];
+          wbe_post_scatter[blk][ idx[beat_cnt_d][blk][ele] ]   = wbe_pre_scatter[blk][ele];
+        end
       end
     end
   end
 
   // Flatten to per-channel wide words
-  logic [VRFWordWidth*NrCh-1:0]  flatten_wdata;
+  logic [VRFWordWidth*NrCh-1:0]   flatten_wdata;
   logic [VRFWordBWidth*NrCh-1:0] flatten_wbe;
 
   for (genvar blk = 0; blk < NrBlksPerBeat; blk++) begin
@@ -142,15 +163,15 @@ module ventaglio_scatter_datapath
   // Drive output arrays: first NrCh channels get data, rest are zero
   for (genvar ch = 0; ch < VENTAGLIO_WFACTOR; ch++) begin : gen_out
     if (ch < NrCh) begin
-      assign wdata_o[ch] = flatten_wdata[ch*VRFWordWidth +: VRFWordWidth];
-      assign wbe_o[ch]   = flatten_wbe  [ch*VRFWordBWidth +: VRFWordBWidth];
+      assign wdata_o[ch] = active_i ? flatten_wdata[ch*VRFWordWidth +: VRFWordWidth] : '0;
+      assign wbe_o[ch]   = active_i ? flatten_wbe  [ch*VRFWordBWidth +: VRFWordBWidth] : '0;
     end else begin
       assign wdata_o[ch] = '0;
       assign wbe_o[ch]   = '0;
     end
   end
 
-  // Valid: AND only the channels this core uses
-  assign wvalid_o = &wvalid_i[NrCh-1:0];
+  // Valid: AND only the channels this core uses (and gate when inactive)
+  assign wvalid_o = active_i ? (&wvalid_i[NrCh-1:0]) : 1'b0;
 
 endmodule : ventaglio_scatter_datapath
