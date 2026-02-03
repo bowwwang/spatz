@@ -678,7 +678,11 @@ module spatz_controller
           end
           if (spatz_req.op == VLX) begin 
             spatz_req.vd = (vtl_index_mapping_q[spatz_req.op_vtl.old_vd].valid) ? vtl_index_mapping_q[spatz_req.op_vtl.old_vd].index_vid : next_idx_id;                               // TODO: need to check avail
-            VTL_idx_occupied_Vreg_d[spatz_req.op_vtl.old_vd] = 1'b1;  // TODO: this reg also need to be rest when VTL cfg
+            VTL_idx_occupied_Vreg_d[spatz_req.vd] = 1'b1;  // TODO: this reg also need to be rest when VTL cfg
+          end else if (VTLVreg_q[spatz_req.vd] && vtl_en_q) begin 
+            // VTL extension is enabled, thhe target vreg is mapped to VTL
+            spatz_req.vl = (VTL_cfg_q.sp_cfg_ratio == SP_RATIO_025) ? vl_q << 2 : 
+                           (VTL_cfg_q.sp_cfg_ratio == SP_RATIO_050) ? vl_q << 1 : vl_q;
           end 
         end
 

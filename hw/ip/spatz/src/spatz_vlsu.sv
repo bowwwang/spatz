@@ -68,7 +68,7 @@ module spatz_vlsu
   //////////////
 
   typedef logic [IdWidth-1:0] id_t;
-  typedef logic [$clog2(NrWordsPerVector*8)-1:0] vreg_elem_t;
+  typedef logic [$clog2(NrWordsPerVector*8)+1:0] vreg_elem_t;
 
   ///////////////////////
   //  Operation queue  //

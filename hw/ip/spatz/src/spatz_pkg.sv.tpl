@@ -97,7 +97,9 @@ package spatz_pkg;
   //////////////////////
 
   // Vector length register
-  typedef logic [$clog2(MAXVL+1)-1:0] vlen_t;
+  typedef logic [$clog2(MAXVL+1)+1:0] vlen_t;
+  // Extended Vector Length register
+  typedef logic [$clog2(MAXVL+1)+1:0] vlen_ex_t;
   // Vector register
   typedef logic [$clog2(NRVREG)-1:0] vreg_t;
 
@@ -283,7 +285,7 @@ package spatz_pkg;
 
     // Spatz config details
     vtype_t vtype;
-    vlen_t vl;
+    vlen_ex_t vl;
     vlen_t vstart;
   } spatz_req_t;
 
@@ -535,26 +537,5 @@ package spatz_pkg;
   localparam int unsigned VTGChannelBWidth    = VTGNrBanksPerChannel * ELENB;
   // Number of rows per VTG Channel
   localparam int unsigned VTGNrWordsPerChannel  = VENTAGLIO_BUFFER_SIZE / (VTGNrChannels * VTGChannelWidth);
-
-  // Enable Configuration
-  // The gather and scatter datapath can be activated individually
-  typedef enum logic [1:0] {
-    VTG_IDLE,
-    VTG_GATHER,
-    VTG_SCATTER,
-    VTG_GA_SC
-  } vtg_mode_e;
-
-  typedef enum logic [1:0] {
-    VTG_N1_M2,
-    VTG_N2_M4,
-    VTG_N1_M4
-  } vtg_ratio_e;
-
-  typedef enum int unsigned {
-    EW8  = 8,
-    EW16 = 16,
-    EW32 = 32
-  } vtg_elemw_e;
 
 endpackage : spatz_pkg
