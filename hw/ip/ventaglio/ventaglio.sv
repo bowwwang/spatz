@@ -186,9 +186,9 @@ module ventaglio
     end
 
     // address generation
-    vrf_raddr_o     = {vidx_d, $clog2(NrWordsPerVector)'(1'b0)} + vreg_idx_counter_q;
+    vrf_raddr_o     = {vidx_q, $clog2(NrWordsPerVector)'(1'b0)} + vreg_idx_counter_q;
     if (vreg_idx_counter_en)
-      vrf_raddr_o     = {vidx_d, $clog2(NrWordsPerVector)'(1'b0)} + vreg_idx_counter_q + 1'b1;
+      vrf_raddr_o     = {vidx_q, $clog2(NrWordsPerVector)'(1'b0)} + vreg_idx_counter_q + 1'b1;
   end
 
   // Logic to issue the read request for loading indices
