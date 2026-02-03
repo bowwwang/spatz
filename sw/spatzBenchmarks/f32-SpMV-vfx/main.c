@@ -23,11 +23,13 @@
 
 #include "data/data_vfxmacc.h"
 
+//////////////////////
+// Kernel Selection //
+//////////////////////
 #define _BASELINE_KERNEL    (0)
-#define _INTERLEAVED_KERNEL (1)
-#define _IMPROVED_KERNEL    (2)
+#define _IMPROVED_KERNEL    (1)
 
-#define _SEL_KERENL         (_BASELINE_KERNEL)
+#define _SEL_KERENL         (_IMPROVED_KERNEL)
 
 float     *a;          // activation vector
 float     *w;          // compact weight matrix 
@@ -37,17 +39,20 @@ float     *res;        // computation results
 float     *zeros;      // TEMP: to init the VTL memory unit
 float     *tmp0, *tmp1; 
 
+///////////
+// Check //
+///////////
 static inline int fp32_check(float *a, float *b) {
   const float threshold = 0.001f;
 
   // Absolute value
   float comp = 0.0f;
-  for (uint32_t i=0; i<P/2; i++){
+  for (uint32_t i=0; i<P; i++){
     comp = b[i] - a[i];
     if (comp < 0) comp = -comp;
     if (comp > threshold) printf("[%d] EXP - %8x, GOT - %8x \n", i, *(int32_t *)&a[i], *(int32_t *)&b[i]);
   }
-  for (uint32_t i=0; i<P/2; i++){
+  for (uint32_t i=0; i<P; i++){
     comp += b[i] - a[i];
   }
   if (comp < 0)
@@ -58,8 +63,10 @@ static inline int fp32_check(float *a, float *b) {
   return comp > threshold;
 }
 
-// Runtime helper function to config vreg mapping
-// Accepted values: [0:31]
+////////////////////////////////////////////////////
+// Runtime helper function to config vreg mapping //
+// Accepted values: [0:31]                        //
+////////////////////////////////////////////////////
 
 static inline uint32_t bit_if_valid(uint32_t vr) {
   return (vr < 32) ? (1u << vr) : 0u;
@@ -79,6 +86,24 @@ static inline void vtl_cfg (uint32_t vr0, uint32_t vr1, uint32_t vr2, uint32_t v
       : "memory"
     );
 }
+
+//////////////////////////
+// Sparse Format Config //
+//////////////////////////
+
+#define IDX_ENC   ((IDX_WIDTH == 1) ? 0 : (IDX_WIDTH == 2) ? 1 : (IDX_WIDTH == 4) ? 2 : 3)
+#define BLK_ENC   ((M_SPARSE  == 1) ? 0 : (M_SPARSE  == 2) ? 1 : (M_SPARSE  == 4) ? 2 : 3)
+#define RATIO_ENC (((M_SPARSE / N_SPARSE) == 2) ? 1 : 2)
+
+static inline void sparse_fmt_cfg(void) {
+  asm volatile ("csrwi 0x7c4, %0" :: "i"(IDX_ENC)   : "memory");
+  asm volatile ("csrwi 0x7c5, %0" :: "i"(BLK_ENC)   : "memory");
+  asm volatile ("csrwi 0x7c6, %0" :: "i"(RATIO_ENC) : "memory");
+}
+
+//////////
+// main //
+//////////
 
 int main() {
   const unsigned int num_cores = snrt_cluster_core_num();
@@ -113,14 +138,7 @@ int main() {
     unsigned int avl  = P_W;
 
     vtl_cfg(16, 20, 24, 28);
-
-    asm volatile(
-      // "csrrwi x0, 0x7c3, 16\n" // v16 is in VTL to gather and scatter
-      "csrrwi x0, 0x7c4, 1\n"  // set idx width to 2-bit
-      "csrrwi x0, 0x7c5, 1\n"  // set blk size to 4
-      "csrrwi x0, 0x7c6, 2\n"  // set sparse ratio to 50%
-      ::: "memory"
-    );
+    sparse_fmt_cfg();
 
     // pointers
     float    * _w        = w;
@@ -156,36 +174,17 @@ int main() {
       }
       #endif 
 
-      //////////////////////////////////////
-      // INTERLEAVE kernel implementation //
-      //////////////////////////////////////
-      #if _SEL_KERENL == _INTERLEAVED_KERNEL
-      for (uint32_t n = 0; n < N; n++){
-        // load scalar activation
-        asm volatile("flw      ft0,  (%0)" ::"r"(_a));
-        _a         += 1;
-        // load index 
-        asm volatile("vlx32.v v16,   (%0)" ::"r"(__nm_index));
-        // load compact weight vector 
-        asm volatile("vle32.v v8,    (%0)" ::"r"(__w));
-        __nm_index += NM_INDEX_ROW_WORDS;
-        __w        += P_W;
-        // index-macc
-        asm volatile("vfxmacc.vf v16, ft0, v8" ::);
-      }
-      #endif
-
       ////////////////////////////////////
       // IMPROVED_KERNEL implementation //
       ////////////////////////////////////
       #if _SEL_KERENL == _IMPROVED_KERNEL
       for (uint32_t n = 0; n < N-1; n+=2){
         // load scalar activation
-        asm volatile("flw      ft0,  (%0)" ::"r"(_a));
+        asm volatile("flw     ft0,  (%0)" ::"r"(_a));
         // load index 
-        asm volatile("vlx32.v v16,   (%0)" ::"r"(__nm_index));
+        asm volatile("vlx32.v v8,   (%0)" ::"r"(__nm_index));
         // load compact weight vector 
-        asm volatile("vle32.v v8,    (%0)" ::"r"(__w));
+        asm volatile("vle32.v v8,   (%0)" ::"r"(__w));
         _a         += 1;
         __w        += P_W;
         // index-macc
@@ -195,7 +194,7 @@ int main() {
         // load scalar activation
         asm volatile("flw      ft1,  (%0)" ::"r"(_a));
         // load index 
-        asm volatile("vlx32.v v16,   (%0)" ::"r"(__nm_index));
+        asm volatile("vlx32.v v12,   (%0)" ::"r"(__nm_index));
         // load compact weight vector 
         asm volatile("vle32.v v12,    (%0)" ::"r"(__w));
         _a         += 1;
@@ -208,16 +207,10 @@ int main() {
 
       // move out
       savl = vl * (M_SPARSE/N_SPARSE);
-      do {
-        // we use m8 here because the effective LMUL is duplicated with 2:4 format
-        asm volatile("vsetvli %0, %1, e32, m8, ta, ma" : "=r"(svl) : "r"(savl));
-        asm volatile("vse32.v v16,   (%0)" ::"r"(_res) );
-        // zero out the VTL memory unit, vmv is not available
-        asm volatile("vle32.v v16,   (%0)" ::"r"(zeros));
-        // Bump pointers
-        savl -= svl;
-        _res += svl;
-      } while (savl > 0);
+      asm volatile("vse32.v v16,   (%0)" ::"r"(_res) );
+      asm volatile("vle32.v v16,   (%0)" ::"r"(zeros));
+      // Bump pointers
+      _res += savl;
 
       // Bump outer loop pointers
       avl       -= vl;
@@ -232,7 +225,7 @@ int main() {
   if (cid == 0){
     // check
     if (fp32_check(golden, res)) {
-      printf("WRONG! Expect %8x (golen[1]), Got %8x (res[1]).\n", *(int32_t *)&golden[1], *(int32_t *)&res[1]);
+      printf("WRONG!   \n");
     } else {
       printf("CORRECT! \n");
     }
@@ -240,10 +233,6 @@ int main() {
 
   // Wait for all cores to finish
   snrt_cluster_hw_barrier();
-
-  // End dump
-  // if (cid == 0)
-  //   stop_kernel();
 
   // Check and display results
   if (cid == 0) {
