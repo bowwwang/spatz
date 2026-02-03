@@ -165,25 +165,43 @@ module ventaglio
   // We cover two scenarios:
   // 1. A new index is loaded with VLX                           --> use VLX info to load index 
   // 2. Each VFXMACC operation requires more than 'VRFWordWidth' --> use VFX info to load index 
+
+  // NOTE: Current Index loading solely depends on `vlx` info
   vreg_t vidx_d, vidx_q;
   `FF(vidx_q, vidx_d, '0)
+  // One step buffer in case the previous index request does not finish
+  vreg_t vidx_buf_d, vidx_buf_q;
+  `FF(vidx_buf_q, vidx_buf_d, '0)
+
   always_comb begin : proc_idx_addr_gen
-    vidx_d = vidx_q;
-    // For VLXMACC instructions
-    if (spatz_req.op_vtl.gather_vs1) begin
-      vidx_d = spatz_req.vs1;
-    end else if (spatz_req.op_vtl.gather_vs2) begin 
-      vidx_d = spatz_req.vs2;
-    end else if (spatz_req.op_vtl.gather_vd || spatz_req.op_vtl.scatter_vd) begin
-      vidx_d = spatz_req.vs1; // bowwang: we now use vid(weight) to find vid(index) in controller
+    vidx_d     = vidx_q;
+    vidx_buf_d = vidx_buf_q;
+
+    // A new VLX instruction received
+    if (spatz_req_valid_i && spatz_req_i.op_vtl.is_load_idx) begin
+      // No on-fly index req --> update vidx, else keep the old req
+      vidx_d     = (vrf_re_o) ? vidx_q : spatz_req_i.op_vtl.old_vd;
+      // buffer the vidx info
+      vidx_buf_d = spatz_req_i.op_vtl.old_vd;
     end
 
-    // For a VLX instruction
-    // VTL do not respond to the VLX instructions
-    // Simply record the VRF id for indices
-    if (spatz_req_valid_i && spatz_req_i.op_vtl.is_load_idx) begin
-      vidx_d = spatz_req_i.op_vtl.old_vd;
-    end
+    // Previous index req is done, and the buffered vidx is not the same as the previous vidx
+    if (!vrf_re_o && vidx_q != vidx_buf_q) begin 
+      // update vidx
+      vidx_d = vidx_buf_q;
+    end 
+
+    // NOTE: Currently not used, but should used for instruction requests more than one idx beat
+    // For VLXMACC instructions
+    // if (new_vtl_request_d) begin 
+    //   if (spatz_req.op_vtl.gather_vs1) begin
+    //     vidx_d = spatz_req.vs1;
+    //   end else if (spatz_req.op_vtl.gather_vs2) begin 
+    //     vidx_d = spatz_req.vs2;
+    //   end else if (spatz_req.op_vtl.gather_vd || spatz_req.op_vtl.scatter_vd) begin
+    //     vidx_d = spatz_req.vs1; // bowwang: we now use vid(weight) to find vid(index) in controller
+    //   end
+    // end 
 
     // address generation
     vrf_raddr_o     = {vidx_q, $clog2(NrWordsPerVector)'(1'b0)} + vreg_idx_counter_q;
@@ -210,7 +228,7 @@ module ventaglio
     end 
   end 
 
-  logic index_preload, index_update;
+  logic index_preload;
   // Nothing is running while the index is ready --> preload
   assign index_preload = !(|running_q) && index_preload_valid_q;
   // Have a valid operation, but no valid index
