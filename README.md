@@ -1,6 +1,147 @@
 ![CI](https://github.com/pulp-platform/spatz/actions/workflows/ci.yml/badge.svg)
 [![License](https://img.shields.io/badge/License-Apache%202.0-blue.svg)](https://opensource.org/licenses/Apache-2.0)
 
+
+# Ventaglio Extension (Local Updates)
+
+This guide explains how to get started with the local Ventaglio extensions and run a first RTL simulation.
+
+Ventaglio currently adds support for two custom instructions:
+
+* `vfxmacc.vf` — used for indexed multiply-accumulate operations
+* `vlx.v` — used for loading indices
+
+If you would like to see how these instructions are used in practice, take a look at:
+
+`sw/spatzBenchmarks/f32-SpMV-vfx/main.c`
+
+That example shows how sparse matrix-vector multiplication (SpMV) is implemented with inline assembly.
+
+---
+
+## Getting started
+
+### 1. Clone the repository
+
+Start by cloning the Ventaglio branch:
+
+```bash
+git clone https://github.com/bowwwang/spatz.git -b ventaglio-rebase
+```
+
+From there, you can create your own branch (fork) for development based on this one.
+
+---
+
+### 2. Install the toolchain dependencies
+
+Before building anything, please make sure you are using **Bash**.
+
+We also rely on a specific Python environment for software compilation and data generation. Please recreate the Conda environment using the file shared earlier, then activate it.
+
+
+**In this tutorial, we use the following format for CLI:**
+```bash
+(directory) >> command
+```
+After that, initialize the project dependencies:
+
+```bash
+(spatz) >> make init
+```
+
+---
+
+### 3. Build the LLVM toolchain
+
+To build LLVM locally, first set up the environment variables and installation paths:
+
+```bash
+(spatz) >> source util/iis-env.sh
+```
+
+You may see installation directories printed in the terminal. This only shows **where LLVM will be installed** — it does **not** mean LLVM is already available there.
+
+Next, clone the LLVM sources and build the local toolchain:
+
+```bash
+# Clone the LLVM source tree
+(spatz) >> make sw/toolchain/llvm-project
+
+# Build LLVM locally
+(spatz) >> make tc-llvm
+```
+
+**This will take around 1 hour to finish.** After this step, you should have a locally built LLVM toolchain that includes the Ventaglio instruction extensions.
+
+---
+
+### 4. Reapply the RISC-V opcode changes
+
+At the moment, there is still a manual step required.
+
+You need to reapply the changes to:
+
+`hw/ip/snitch/src/riscv_instr.sv`
+
+The easiest way is to copy the modified version from Git and overwrite the local file.
+
+Once this is done, the setup is ready for RTL simulation.
+
+---
+
+### 5. Build the hardware and run the simulation
+
+The file
+
+`sw/spatzBenchmarks/CMakeLists.txt`
+
+defines the software compilation flow for the benchmark kernels.
+
+For now, it has been simplified to only build:
+
+* `f32-SpMV-vfx`
+* its required supporting libraries
+
+It is worth skimming through this file once, as it gives a good overview of how the compilation flow is organized.
+
+#### Build the test case
+
+Move into the cluster directory and build both hardware and software:
+
+```bash
+(spatz)         >> cd hw/system/spatz_cluster
+(spatz_cluster) >> make clean && make sw.vsim -B
+```
+
+If you run into any errors up to this point, please report them before moving on.
+
+#### Launch the simulation
+
+```bash
+(spatz_cluster) >> bin/spatz_cluster.vsim.gui sw/build/spatzBenchmarks/test-spatzBenchmarks-f32-SpMV-vfx
+```
+
+This will start the QuestaSim GUI.
+
+If everything is set up correctly, the program should run to completion without errors.
+
+---
+
+## Summary
+
+At this point, the overall flow is:
+
+1. Clone the repository
+2. Set up the Python environment and dependencies
+3. Build the custom LLVM toolchain
+4. Reapply the opcode update in `riscv_instr.sv`
+5. Build the hardware/software flow
+6. Run the RTL simulation in QuestaSim
+
+If something fails along the way, that is completely normal for a first setup — just note the error message and report it.
+
+
 # Spatz
 
 Spatz is a compact vector processor based on [RISC-V's Vector Extension (RVV) v1.0](https://github.com/riscv/riscv-v-spec/releases/tag/v1.0). Spatz acts as a coprocessor of [Snitch](https://github.com/pulp-platform/snitch), a tiny 64-bit scalar core. It is developed as part of the PULP project, a joint effort between ETH Zurich and the University of Bologna.
