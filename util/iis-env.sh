@@ -5,6 +5,10 @@
 # Author: Mattia Sinigaglia, Universisty of Bologna
 
 echo "export Spatz toolchains"
-# export LLVM_INSTALL_DIR=/usr/pack/riscv-1.0-kgf/spatz-llvm-2023.08.10
-export LLVM_INSTALL_DIR=/scratch2/bowwang/spatz_nf/spatz/toolchain/spatz-llvm
+
+export LLVM_INSTALL_DIR="$(pwd)/build/llvm"
 export GCC_INSTALL_DIR=/usr/pack/riscv-1.0-kgf/spatz-gcc-7.1.1
+
+
+echo "LLVM_INSTALL_DIR=${LLVM_INSTALL_DIR}"
+echo "GCC_INSTALL_DIR=${GCC_INSTALL_DIR}"
