@@ -542,10 +542,10 @@ module spatz_controller
 
             // Normal ld/st instructions are considered
             // `vlx` instructions never map to VTL 
-            if (spatz_req.use_vd && |((32'b1 << spatz_req.vd) & VTLVreg_q) && !spatz_req.op_vtl.is_load_idx && spatz_req.op_mem.is_load) begin 
+            if (spatz_req.use_vd && |((32'b1 << spatz_req.op_vtl.old_vd) & VTLVreg_q) && !spatz_req.op_vtl.is_load_idx && spatz_req.op_mem.is_load) begin 
               vtl_table_d[spatz_req.id].write[SB_VLSU_VD_WD-NrReadPorts] = 1'b1; // w
             end 
-            if (spatz_req.use_vd && |((32'b1 << spatz_req.vd) & VTLVreg_q) && !spatz_req.op_vtl.is_load_idx && !spatz_req.op_mem.is_load) begin 
+            if (spatz_req.use_vd && |((32'b1 << spatz_req.op_vtl.old_vd) & VTLVreg_q) && !spatz_req.op_vtl.is_load_idx && !spatz_req.op_mem.is_load) begin 
               vtl_table_d[spatz_req.id].read[SB_VLSU_VD_RD] = 1'b1; // r
             end 
             // mark the index loading instruction
@@ -672,6 +672,7 @@ module spatz_controller
           // Overwrite vl and vstart in request (preserve vtype with vsew)
           spatz_req.vl     = vl_q;
           spatz_req.vstart = vstart_q;
+          spatz_req.vd     = spatz_req.op_vtl.old_vd;
           // If VTL is enabled, we add vtl_cfg to support vlx instruction 
           if (vtl_en_q) begin 
             spatz_req.op_vtl.sp_cfg = VTL_cfg_q;
@@ -679,10 +680,15 @@ module spatz_controller
           if (spatz_req.op == VLX) begin 
             spatz_req.vd = (vtl_index_mapping_q[spatz_req.op_vtl.old_vd].valid) ? vtl_index_mapping_q[spatz_req.op_vtl.old_vd].index_vid : next_idx_id;                               // TODO: need to check avail
             VTL_idx_occupied_Vreg_d[spatz_req.vd] = 1'b1;  // TODO: this reg also need to be rest when VTL cfg
-          end else if (VTLVreg_q[spatz_req.vd] && vtl_en_q) begin 
-            // VTL extension is enabled, thhe target vreg is mapped to VTL
+          end else if (VTLVreg_q[spatz_req.op_vtl.old_vd] && vtl_en_q) begin 
+            // VTL extension is enabled, the target vreg is mapped to VTL
             spatz_req.vl = (VTL_cfg_q.sp_cfg_ratio == SP_RATIO_025) ? vl_q << 2 : 
                            (VTL_cfg_q.sp_cfg_ratio == SP_RATIO_050) ? vl_q << 1 : vl_q;
+            spatz_req.vd = (VTL_cfg_q.sp_cfg_ratio == SP_RATIO_025) ? spatz_req.op_vtl.old_vd << 2 : 
+                           (VTL_cfg_q.sp_cfg_ratio == SP_RATIO_050) ? spatz_req.op_vtl.old_vd << 1 : spatz_req.op_vtl.old_vd;
+            
+            // The following implementation is really hardcoded, need update
+            // if (spatz_req.op != VLX && spatz_req.op_vtl.old_vd == 18) spatz_req.vd = 24;
           end 
         end
 

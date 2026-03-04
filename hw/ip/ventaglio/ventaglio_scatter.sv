@@ -25,6 +25,7 @@ module ventaglio_scatter
 
   // control
   input  logic                               scatter_done_i,
+  input  logic                        [4:0]  num_beats_per_op_i,
 
   // index
   input  vrf_data_t                          index_i,
@@ -130,6 +131,7 @@ module ventaglio_scatter
     .index_load_req_o (index_load_req_050),
 
     .wvalid_i,
+    .num_beats_per_op_i,
 
     .wdata_o  (wdata_050),
     .wbe_o    (wbe_050),
@@ -162,6 +164,7 @@ module ventaglio_scatter
     .index_load_req_o (index_load_req_025),
 
     .wvalid_i,
+    .num_beats_per_op_i,
 
     .wdata_o  (wdata_025),
     .wbe_o    (wbe_025),

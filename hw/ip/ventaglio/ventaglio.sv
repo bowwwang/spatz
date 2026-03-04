@@ -9,6 +9,7 @@
 
 module ventaglio
   import spatz_pkg::*;
+  import rvv_pkg::*;
   #(
     parameter int unsigned NrReadPorts  = 1,
     parameter int unsigned NrWritePorts = 1,
@@ -134,20 +135,27 @@ module ventaglio
   vrf_addr_t vreg_idx_counter_q;
   `FF(vreg_idx_counter_q, vreg_idx_counter_d, '0)
 
+  logic index_requested;
+  `FF(index_requested, vrf_re_o, '0)
+
   logic index_valid_d, index_valid_q;
   `FF(index_valid_q, index_valid_d, '0)
 
   // naive index valid logic handling
   always_comb begin : proc_index_valid
     index_valid_d = index_valid_q;
-    if (vrf_rvalid_i) begin 
-      // VALID when a new index is available from read
-      index_valid_d = 1'b1;
-    end 
     if (spatz_vfu_req_ready_i) begin 
       // INVALID when VFU has a new req to process 
       index_valid_d = 1'b0;
     end
+    if (index_requested) begin 
+      // A new index is coming
+      index_valid_d = 1'b1;
+    end
+    if (vrf_rvalid_i) begin 
+      // VALID when a new index is available from read
+      index_valid_d = 1'b1;
+    end 
   end 
 
   always_comb begin : proc_idx_counter
@@ -167,47 +175,98 @@ module ventaglio
   // 2. Each VFXMACC operation requires more than 'VRFWordWidth' --> use VFX info to load index 
 
   // NOTE: Current Index loading solely depends on `vlx` info
-  vreg_t vidx_d, vidx_q;
-  `FF(vidx_q, vidx_d, '0)
+  // vreg_t vidx_d, vidx_q;
+  // `FF(vidx_q, vidx_d, '0)
   // One step buffer in case the previous index request does not finish
-  vreg_t vidx_buf_d, vidx_buf_q;
-  `FF(vidx_buf_q, vidx_buf_d, '0)
+  // vreg_t vidx_buf_d, vidx_buf_q;
+  // `FF(vidx_buf_q, vidx_buf_d, '0)
+
+  // We need a buffer here to track the next op 
+  logic last_op_beat;
+  logic next_is_sparse_op;
+  vreg_t vidx, next_vidx_d, next_vidx_q;
+  logic  next_valid_d, next_valid_q;
+
+  assign next_is_sparse_op = spatz_req_i.ex_unit == VFU && spatz_req_i.op_vtl.use_vtl;
+
+  `FF(next_valid_q, next_valid_d, '0)
+  `FF(next_vidx_q,  next_vidx_d, '0)
+
+  always_comb begin
+    next_valid_d = next_valid_q;
+    next_vidx_d  = next_vidx_q;
+    if (spatz_req_valid && next_is_sparse_op && next_valid_q == 0) begin 
+      next_valid_d = spatz_req_valid_i;
+      next_vidx_d  = spatz_req_i.vs1;
+    end 
+    if (vrf_re_o) begin
+      next_valid_d = '0;
+      next_vidx_d  = '0;
+    end
+  end
 
   always_comb begin : proc_idx_addr_gen
-    vidx_d     = vidx_q;
-    vidx_buf_d = vidx_buf_q;
+    // vidx_d     = vidx_q;
+    // vidx_buf_d = vidx_buf_q;
 
     // A new VLX instruction received
-    if (spatz_req_valid_i && spatz_req_i.op_vtl.is_load_idx) begin
-      // No on-fly index req --> update vidx, else keep the old req
-      vidx_d     = (vrf_re_o) ? vidx_q : spatz_req_i.op_vtl.old_vd;
-      // buffer the vidx info
-      vidx_buf_d = spatz_req_i.op_vtl.old_vd;
-    end
+    // if (spatz_req_valid_i && spatz_req_i.op_vtl.is_load_idx) begin
+    //   // No on-fly index req --> update vidx, else keep the old req
+    //   vidx_d     = (vrf_re_o) ? vidx_q : spatz_req_i.op_vtl.old_vd;
+    //   // buffer the vidx info
+    //   vidx_buf_d = spatz_req_i.op_vtl.old_vd;
+    // end
 
     // Previous index req is done, and the buffered vidx is not the same as the previous vidx
-    if (!vrf_re_o && vidx_q != vidx_buf_q) begin 
-      // update vidx
-      vidx_d = vidx_buf_q;
-    end 
-
-    // NOTE: Currently not used, but should used for instruction requests more than one idx beat
-    // For VLXMACC instructions
-    // if (new_vtl_request_d) begin 
-    //   if (spatz_req.op_vtl.gather_vs1) begin
-    //     vidx_d = spatz_req.vs1;
-    //   end else if (spatz_req.op_vtl.gather_vs2) begin 
-    //     vidx_d = spatz_req.vs2;
-    //   end else if (spatz_req.op_vtl.gather_vd || spatz_req.op_vtl.scatter_vd) begin
-    //     vidx_d = spatz_req.vs1; // bowwang: we now use vid(weight) to find vid(index) in controller
-    //   end
+    // if (!vrf_re_o && vidx_q != vidx_buf_q) begin 
+    //   // update vidx
+    //   vidx_d = vidx_buf_q;
     // end 
 
+    // vidx = (spatz_req_valid) ? ( (next_valid_d && !next_valid_q && last_op_beat) ? next_vidx_d : next_vidx_q) : spatz_req_i.vs1;
+    vidx = (spatz_req_valid) ? ( (next_is_sparse_op && !next_valid_q && spatz_req_valid_i) ? spatz_req_i.vs1 : next_vidx_q) : spatz_req_i.vs1;
+
     // address generation
-    vrf_raddr_o     = {vidx_q, $clog2(NrWordsPerVector)'(1'b0)} + vreg_idx_counter_q;
+    vrf_raddr_o     = {vidx, $clog2(NrWordsPerVector)'(1'b0)} + vreg_idx_counter_q;
     if (vreg_idx_counter_en)
-      vrf_raddr_o     = {vidx_q, $clog2(NrWordsPerVector)'(1'b0)} + vreg_idx_counter_q + 1'b1;
+      vrf_raddr_o     = {vidx, $clog2(NrWordsPerVector)'(1'b0)} + vreg_idx_counter_q + 1'b1;
   end
+
+  ////////////////////////////////
+  // Counter for each operation //
+  ////////////////////////////////
+
+  // signals for gather or scatter
+  logic is_gather, is_scatter;
+
+  logic req_proceed;
+  logic last_addr_bit_d, last_addr_bit_q;
+  `FF(last_addr_bit_q, last_addr_bit_d, '0)
+
+  assign last_addr_bit_d = raddr_i[0];
+  assign req_proceed = last_addr_bit_d ^ last_addr_bit_q;
+
+  logic [4:0] num_beats_per_op;
+  // TODO: only considered N_FU=4
+  assign num_beats_per_op = (spatz_req.vtype.vsew == EW_32) ? {spatz_req.vl >> 3}[7:0] : (spatz_req.vl[7:0]);
+
+  logic [4:0] op_beat_cnt_d, op_beat_cnt_q;
+  `FF(op_beat_cnt_q, op_beat_cnt_d, '0)
+
+  always_comb begin 
+    last_op_beat  = 1'b0;
+    op_beat_cnt_d = op_beat_cnt_q;
+    // counter proceed 
+    if (is_gather && rvalid_o && req_proceed) op_beat_cnt_d = op_beat_cnt_q + 1;
+    // time to load idx?
+    if (op_beat_cnt_q == num_beats_per_op - 2) begin 
+      last_op_beat  = 1'b1;
+    end 
+    if (op_beat_cnt_q == num_beats_per_op - 1) begin
+      op_beat_cnt_d = 0;
+    end
+  end 
+
 
   // Logic to issue the read request for loading indices
   // 1. When no gather/scatter is operating, and controller informed the index is ready
@@ -229,10 +288,22 @@ module ventaglio
   end 
 
   logic index_preload;
+  logic index_load;
   // Nothing is running while the index is ready --> preload
   assign index_preload = !(|running_q) && index_preload_valid_q;
   // Have a valid operation, but no valid index
-  assign index_load    = spatz_req_valid && !index_valid_q;
+  // assign index_load    = spatz_req_valid && !index_valid_q;
+  always_comb begin : index_req_gen
+    index_load = 0;
+    if (!spatz_req_valid) begin // no sparse-op in-fly
+      if (next_is_sparse_op && spatz_req_valid_i)
+        index_load = 1;
+    end else begin  // have a ongoing sparse-op
+      if (( (next_is_sparse_op && !next_valid_q && spatz_req_valid_i) || next_valid_q) && last_op_beat)
+      // if (next_valid_q && last_op_beat)
+        index_load = 1;
+    end
+  end 
 
   assign vrf_re_o      = index_preload | index_load;
   // This is not required, sudo ID used
@@ -285,7 +356,6 @@ module ventaglio
   /******************************/
 
   // signals for gather or scatter
-  logic is_gather, is_scatter;
   logic gather_done;
   `FF(gather_done, spatz_vfu_req_ready_i&&spatz_req_valid, '0)
 
@@ -464,6 +534,7 @@ module ventaglio
     // control 
     // TODO: it is better to implement as a counter to track
     .scatter_done_i      (!is_scatter),
+    .num_beats_per_op_i  (num_beats_per_op),
     // controls
     .index_i       (index_q                ),
     .vtl_cfg_i     (spatz_req.op_vtl.sp_cfg),

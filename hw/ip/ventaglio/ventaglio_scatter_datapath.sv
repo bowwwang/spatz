@@ -29,6 +29,7 @@ module ventaglio_scatter_datapath
 
   // NEW: request to load the shared index register in top
   output logic                               index_load_req_o,
+  input  logic                        [4:0]  num_beats_per_op_i,
 
   input  logic      [VENTAGLIO_WFACTOR-1:0]  wvalid_i,
 
@@ -72,7 +73,7 @@ module ventaglio_scatter_datapath
       beat_cnt_d = '0;
     end else begin
       if (beat_cnt_en) begin
-        if (beat_cnt_q == NrBeatsPerInput-1) begin
+        if (beat_cnt_q == num_beats_per_op_i-1) begin
           beat_cnt_d = '0;
         end else begin
           beat_cnt_d = beat_cnt_q + 1'b1;
@@ -92,9 +93,9 @@ module ventaglio_scatter_datapath
 
     if (active_i
         && index_valid_i
-        && ( (beat_cnt_q == '0)
-             || scatter_done_i
-             || (beat_cnt_q == (NrBeatsPerInput-1)-1) ) ) begin
+        && ( /*(beat_cnt_q == '0)
+             || */scatter_done_i
+             || (beat_cnt_q == (num_beats_per_op_i-1)-1) ) ) begin
       index_load_req_o = 1'b1;
     end
   end
