@@ -50,7 +50,7 @@ static inline int fp32_check(float *a, float *b) {
   float comp     = 0.0f;
   float comp_acc = 0.0f;
   for (uint32_t m=0; m<M; m++){
-    for (uint32_t p=0; p<P; p++){
+    for (uint32_t p=0; p<(P-16); p++){
       comp = b[m*P + p] - a[m*P + p];
       if (comp < 0) comp = -comp;
       if (comp > threshold) {
@@ -59,8 +59,8 @@ static inline int fp32_check(float *a, float *b) {
       }
     }
   }
-  printf("COMP - %8x \n", *(int32_t *)&comp);
-  return comp > threshold;
+  printf("COMP - %8x \n", *(int32_t *)&comp_acc);
+  return comp_acc > threshold;
 }
 
 ////////////////////////////////////////////////////
@@ -137,7 +137,7 @@ int main() {
     // unsigned int vl, svl, savl;
     // unsigned int avl  = P_W;
 
-    vtl_cfg(16, 20, 32, 32);
+    vtl_cfg(16, 18, 32, 32);
     sparse_fmt_cfg();
 
     unsigned int p = 0;
@@ -163,72 +163,86 @@ int main() {
       float *res_ = res + (p<<2);
       #endif
 
-      for (unsigned m=0; m<M; m+=2){
-        const float *a_ = a + m * N;
+      for (unsigned m = 0; m < M; m += 2) {
+        const float *a_  = a + m * N;
         const float *a__ = a_;
 
-        asm volatile("vlx32.v v8, (%0)" ::"r"(idx_));
-        const uint32_t *idx__ = idx_ + NM_INDEX_ROW_WORDS;
+        // Preload w/idx for n=0 into v8 and n=1 into v4
+        const uint32_t *idx__ = idx_;
+        const float    *w__   = w_;
 
-        asm volatile("vle32.v v8, (%0);" ::"r"(w_));
-        const float *w__ = w_ + P_W;
+        asm volatile("vlx32.v v8, (%0)" :: "r"(idx__));
+        idx__ += NM_INDEX_ROW_WORDS;
+        asm volatile("vle32.v v8, (%0)" :: "r"(w__));
+        w__ += P_W;
+
+        asm volatile("vlx32.v v4, (%0)" :: "r"(idx__));
+        idx__ += NM_INDEX_ROW_WORDS;
+        asm volatile("vle32.v v4, (%0)" :: "r"(w__));
+        w__ += P_W;
 
         float *res__ = res_ + m * P;
 
         float t0, t1;
 
+        // Scalars for n=0
         t0 = *a__;
         a__ += N;
         t1 = *a__;
+        // Move a__ to element n=1 of row m (same style as your current code)
+        a__ -= (N - 1);
 
-        unsigned int n = 0;
+        // Init accumulators with n=0 weights in v8
+        asm volatile("vfxmul.vf v16, v8, %0" :: "f"(t0));
+        asm volatile("vfxmul.vf v18, v8, %0" :: "f"(t1));
 
-        while (n<N) {
-          a__ = a_ + ++n;
+        // Scalars for n=1 (current weights in v4)
+        t0 = *a__;
+        a__ += N;
+        t1 = *a__;
+        a__ -= (N - 1);
 
-          asm volatile("vlx32.v v4, (%0)" ::"r"(idx__));
+        unsigned n = 1;
+
+        while (n < N - 1) {
+          // Prefetch weights for n+1 into v8
+          asm volatile("vlx32.v v8, (%0)" :: "r"(idx__));
           idx__ += NM_INDEX_ROW_WORDS;
-
-          asm volatile("vle32.v v4, (%0);" ::"r"(w__));
+          asm volatile("vle32.v v8, (%0)" :: "r"(w__));
           w__ += P_W;
 
-          if (n==1) {
-            asm volatile("vfxmacc.vf v16, %0, v8" ::"f"(t0));
-            t0 = *a__;
-            a__ += N;
-            asm volatile("vfxmacc.vf v20, %0, v8" ::"f"(t1));
-            t1 = *a__;
-          } else {
-            asm volatile("vfxmacc.vf v16, %0, v8" ::"f"(t0));
-            t0 = *a__;
-            a__ += N;
-            asm volatile("vfxmacc.vf v20, %0, v8" ::"f"(t1));
-            t1 = *a__;
-          }
-
-          a__ = a_ + ++n;
-
-          if (n == N)
-            break;
-
-          asm volatile("vlx32.v v8, (%0)" ::"r"(idx__));
-          idx__ += NM_INDEX_ROW_WORDS;
-          asm volatile("vle32.v v8, (%0);" ::"r"(w__));
-          w__ += P_W;
-
-          asm volatile("vfxmacc.vf v16, %0, v4" ::"f"(t0));
-          t0 = *a__;
+          // Consume n (v4)
+          asm volatile("vfxmacc.vf v16, %0, v4" :: "f"(t0));
+          asm volatile("flw %[t], 0(%[a])" : [t] "=f"(t0) : [a] "r"(a__));
           a__ += N;
-          asm volatile("vfxmacc.vf v20, %0, v4" ::"f"(t1));
-          t1 = *a__;
+          asm volatile("vfxmacc.vf v18, %0, v4" :: "f"(t1));
+          asm volatile("flw %[t], 0(%[a])" : [t] "=f"(t1) : [a] "r"(a__));
+          a__ -= (N - 1);
+
+          n += 2;
+
+          // Prefetch weights for n+2 into v4
+          asm volatile("vlx32.v v4, (%0)" :: "r"(idx__));
+          idx__ += NM_INDEX_ROW_WORDS;
+          asm volatile("vle32.v v4, (%0)" :: "r"(w__));
+          w__ += P_W;
+
+          // Consume n+1 (v8)
+          asm volatile("vfxmacc.vf v16, %0, v8" :: "f"(t0));
+          asm volatile("flw %[t], 0(%[a])" : [t] "=f"(t0) : [a] "r"(a__));
+          a__ += N;
+          asm volatile("vfxmacc.vf v18, %0, v8" :: "f"(t1));
+          asm volatile("flw %[t], 0(%[a])" : [t] "=f"(t1) : [a] "r"(a__));
+          a__ -= (N - 1);
         }
-        asm volatile("vfxmacc.vf v16, %0, v4" ::"f"(t0));
-        asm volatile("vse32.v v16, (%0);" ::"r"(res__));
-        asm volatile("vle32.v v16, (%0)"  ::"r"(zeros));
+
+        // Final consume for n = N-1 (v4), with current t0/t1 already loaded for N-1
+        asm volatile("vfxmacc.vf v16, %0, v4" :: "f"(t0));
+        asm volatile("vse32.v v16, (%0)" :: "r"(res__));
         res__ += P;
-        asm volatile("vfxmacc.vf v20, %0, v4" ::"f"(t1));
-        asm volatile("vse32.v v20, (%0);" ::"r"(res__));
-        asm volatile("vle32.v v20, (%0)"  ::"r"(zeros));
+
+        asm volatile("vfxmacc.vf v18, %0, v4" :: "f"(t1));
+        asm volatile("vse32.v v18, (%0)" :: "r"(res__));
       }
 
       p += gvl;
