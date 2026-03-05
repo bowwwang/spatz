@@ -427,6 +427,7 @@ module spatz_fpu_sequencer
         riscv_instr::VFMV_V_F,
         riscv_instr::VFMV_S_F,
         riscv_instr::VFMUL_VF,
+        riscv_instr::VFXMUL_VF,
         riscv_instr::VFRSUB_VF,
         riscv_instr::VFMADD_VF,
         riscv_instr::VFNMADD_VF,

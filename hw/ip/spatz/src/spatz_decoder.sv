@@ -893,6 +893,7 @@ module spatz_decoder
         riscv_instr::VFSGNJX_VF,
         riscv_instr::VFMUL_VV,
         riscv_instr::VFMUL_VF,
+        riscv_instr::VFXMUL_VF,
         riscv_instr::VFMADD_VV,
         riscv_instr::VFMADD_VF,
         riscv_instr::VFNMADD_VV,
@@ -1011,6 +1012,13 @@ module spatz_decoder
 
               riscv_instr::VFMUL_VV,
               riscv_instr::VFMUL_VF: spatz_req.op = VFMUL;
+
+              riscv_instr::VFXMUL_VF: begin 
+                spatz_req.op = VFMUL;
+                spatz_req.op_vtl.use_vtl     = 1'b1;
+                spatz_req.op_vtl.scatter_vd  = 1'b1;
+              end
+
               riscv_instr::VFMACC_VV,
               riscv_instr::VFMACC_VF,
               riscv_instr::VFMADD_VV,

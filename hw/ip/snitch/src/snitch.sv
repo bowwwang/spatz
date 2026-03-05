@@ -2543,6 +2543,7 @@ module snitch import snitch_pkg::*; import riscv_instr::*; #(
       riscv_instr::VFSLIDE1DOWN_VF,
       riscv_instr::VFMV_V_F,
       riscv_instr::VFMV_S_F,
+      riscv_instr::VFXMUL_VF,
       riscv_instr::VFMUL_VF,
       riscv_instr::VFRSUB_VF,
       riscv_instr::VFMADD_VF,
