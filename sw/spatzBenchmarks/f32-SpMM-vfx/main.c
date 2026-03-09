@@ -133,8 +133,6 @@ int main() {
 
   // test the move instruction
   if (cid == 0){
-    // unsigned int vl, svl, savl;
-    // unsigned int avl  = P_W;
 
     vtl_cfg(16, 18, 32, 32);
     sparse_fmt_cfg();
@@ -162,6 +160,11 @@ int main() {
       float *res_ = res + (p<<2);
       #endif
 
+      const intptr_t idx_stride_bytes   = (intptr_t)NM_INDEX_ROW_WORDS * sizeof(float);
+      const intptr_t w_stride_bytes     = (intptr_t)P_W                * sizeof(float);
+      const intptr_t a_stride_bytes     = (intptr_t)N * sizeof(float);
+      const intptr_t a_stride_bytes_1_n = (intptr_t)(1-N) * sizeof(float);
+
       for (unsigned m = 0; m < M; m += 2) {
         const float *a_  = a + m * N;
         const float *a__ = a_;
@@ -170,35 +173,27 @@ int main() {
         const uint32_t *idx__ = idx_;
         const float    *w__   = w_;
 
-        asm volatile("vlx32.v v8, (%0)" :: "r"(idx__));
-        idx__ += NM_INDEX_ROW_WORDS;
-        asm volatile("vle32.v v8, (%0)" :: "r"(w__));
-        w__ += P_W;
+        asm volatile("p.vlx32.v.rrpost v8, (%0), %1" : "+r"(idx__) : "r"(idx_stride_bytes) : "memory"); // v8* <- *idx__, idx__ += P_W
+        asm volatile("p.vle32.v.rrpost v8, (%0), %1" : "+r"(w__)   : "r"(w_stride_bytes)   : "memory"); // v8  <- *w__, w__ += P_W
 
-        asm volatile("vlx32.v v4, (%0)" :: "r"(idx__));
-        idx__ += NM_INDEX_ROW_WORDS;
-        asm volatile("vle32.v v4, (%0)" :: "r"(w__));
-        w__ += P_W;
+        asm volatile("p.vlx32.v.rrpost v4, (%0), %1" : "+r"(idx__) : "r"(idx_stride_bytes) : "memory"); 
+        asm volatile("p.vle32.v.rrpost v4, (%0), %1" : "+r"(w__)   : "r"(w_stride_bytes)   : "memory");
 
         float *res__ = res_ + m * P;
 
         float t0, t1;
 
-        // Scalars for n=0
-        t0 = *a__;
-        a__ += N;
-        t1 = *a__;
-        // Move a__ to element n=1 of row m (same style as your current code)
-        a__ -= (N - 1);
+        // // Scalars for n=0
+        asm volatile("p.flw.rrpost %0, (%1), %2" : "=f"(t0), "+r"(a__) : "r"(a_stride_bytes) : "memory");
+        asm volatile("p.flw.rrpost %0, (%1), %2" : "=f"(t1), "+r"(a__) : "r"(a_stride_bytes_1_n) : "memory");
+
 
         // Init accumulators with n=0 weights in v8
         asm volatile("vfxmul.vf v16, v8, %0" :: "f"(t0));
-        asm volatile("flw %[t], 0(%[a])" : [t] "=f"(t0) : [a] "r"(a__));
-        a__ += N;
+        asm volatile("p.flw.rrpost %0, (%1), %2" : "=f"(t0), "+r"(a__) : "r"(a_stride_bytes) : "memory");
         // Scalars for n=1 (current weights in v4)
         asm volatile("vfxmul.vf v18, v8, %0" :: "f"(t1));
-        asm volatile("flw %[t], 0(%[a])" : [t] "=f"(t1) : [a] "r"(a__));
-        a__ -= (N - 1);
+        asm volatile("p.flw.rrpost %0, (%1), %2" : "=f"(t1), "+r"(a__) : "r"(a_stride_bytes_1_n) : "memory");
 
 
         unsigned n = 1;
@@ -236,27 +231,27 @@ int main() {
           #endif
 
           #if (POST_INC == 1)
-          asm volatile("vlx32.v v8, (%0)" :: "r"(idx__));
-          asm volatile("vle32.v v8, (%0)" :: "r"(w__));
-
+          asm volatile("p.vlx32.v.rrpost v8, (%0), %1" : "+r"(idx__) : "r"(idx_stride_bytes) : "memory"); 
+          asm volatile("p.vle32.v.rrpost v8, (%0), %1" : "+r"(w__)   : "r"(w_stride_bytes)   : "memory");
           // Consume n (v4)
           asm volatile("vfxmacc.vf v16, %0, v4" :: "f"(t0));
-          asm volatile("flw %[t], 0(%[a])" : [t] "=f"(t0) : [a] "r"(a__));
+          asm volatile("p.flw.rrpost %0, (%1), %2" : "=f"(t0), "+r"(a__) : "r"(a_stride_bytes) : "memory");
 
           asm volatile("vfxmacc.vf v18, %0, v4" :: "f"(t1));
-          asm volatile("flw %[t], 0(%[a])" : [t] "=f"(t1) : [a] "r"(a__));
+          asm volatile("p.flw.rrpost %0, (%1), %2" : "=f"(t1), "+r"(a__) : "r"(a_stride_bytes_1_n) : "memory");
+
 
           // Prefetch weights for n+2 into v4
-          asm volatile("vlx32.v v4, (%0)" :: "r"(idx__));
-          asm volatile("vle32.v v4, (%0)" :: "r"(w__));
+          asm volatile("p.vlx32.v.rrpost v4, (%0), %1" : "+r"(idx__) : "r"(idx_stride_bytes) : "memory"); 
+          asm volatile("p.vle32.v.rrpost v4, (%0), %1" : "+r"(w__)   : "r"(w_stride_bytes)   : "memory");
 
           // Consume n+1 (v8)
           asm volatile("vfxmacc.vf v16, %0, v8" :: "f"(t0));
-          asm volatile("flw %[t], 0(%[a])" : [t] "=f"(t0) : [a] "r"(a__));
+          asm volatile("p.flw.rrpost %0, (%1), %2" : "=f"(t0), "+r"(a__) : "r"(a_stride_bytes) : "memory");
           asm volatile("addi %0, %0, 2" : "+r"(n));
 
           asm volatile("vfxmacc.vf v18, %0, v8" :: "f"(t1));
-          asm volatile("flw %[t], 0(%[a])" : [t] "=f"(t1) : [a] "r"(a__));
+          asm volatile("p.flw.rrpost %0, (%1), %2" : "=f"(t1), "+r"(a__) : "r"(a_stride_bytes_1_n) : "memory");
           #endif
 
         }
