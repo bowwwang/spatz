@@ -87,7 +87,7 @@ package spatz_pkg;
   localparam int GPRWidth = FPU ? 6 : 5;
 
   // Number of parallel vector instructions
-  localparam int unsigned NrParallelInstructions = 4;
+  localparam int unsigned NrParallelInstructions = 8;
 
   // Largest element width that Spatz supports
   localparam vew_e MAXEW = RVD ? EW_64 : EW_32;
@@ -343,6 +343,9 @@ package spatz_pkg;
 
     // Did the memory request trigger an exception
     logic exc;
+
+    // mark the vlx insn
+    logic is_vlx;
   } vlsu_rsp_t;
 
 % if cfg['mempool']:

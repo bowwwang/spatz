@@ -289,6 +289,7 @@ module ventaglio
 
   logic index_preload;
   logic index_load;
+  logic scatter_index_load_req;
   // Nothing is running while the index is ready --> preload
   assign index_preload = !(|running_q) && index_preload_valid_q;
   // Have a valid operation, but no valid index
@@ -302,6 +303,10 @@ module ventaglio
       if (( (next_is_sparse_op && !next_valid_q && spatz_req_valid_i) || next_valid_q) && last_op_beat)
       // if (next_valid_q && last_op_beat)
         index_load = 1;
+    end
+
+    if (!index_valid_q && next_valid_q) begin
+      index_load = 1;
     end
   end 
 

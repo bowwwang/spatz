@@ -686,7 +686,6 @@ module spatz_controller
                            (VTL_cfg_q.sp_cfg_ratio == SP_RATIO_050) ? vl_q << 1 : vl_q;
             spatz_req.vd = (VTL_cfg_q.sp_cfg_ratio == SP_RATIO_025) ? spatz_req.op_vtl.old_vd << 2 : 
                            (VTL_cfg_q.sp_cfg_ratio == SP_RATIO_050) ? spatz_req.op_vtl.old_vd << 1 : spatz_req.op_vtl.old_vd;
-            
             // The following implementation is really hardcoded, need update
             // if (spatz_req.op != VLX && spatz_req.op_vtl.old_vd == 18) spatz_req.vd = 24;
           end 

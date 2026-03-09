@@ -318,6 +318,7 @@ module spatz_vlsu
     logic is_load;
     logic is_strided;
     logic is_indexed;
+    logic is_vlx;
   } commit_metadata_t;
 
   commit_metadata_t commit_insn_d;
@@ -355,7 +356,8 @@ module spatz_vlsu
       rs1       : mem_spatz_req.rs1[2:0],
       is_load   : mem_spatz_req.op_mem.is_load,
       is_strided: mem_is_strided,
-      is_indexed: mem_is_indexed
+      is_indexed: mem_is_indexed,
+      is_vlx    : mem_spatz_req.op_vtl.is_load_idx  
   };
 
   always_comb begin: queue_control
@@ -799,8 +801,9 @@ module spatz_vlsu
     mem_req_last   = '0;
 
     // Propagate request ID
-    vrf_req_d.rsp.id    = commit_insn_q.id;
-    vrf_req_d.rsp_valid = commit_insn_valid && &commit_finished_d && mem_insn_finished_d[commit_insn_q.id];
+    vrf_req_d.rsp.id     = commit_insn_q.id;
+    vrf_req_d.rsp.is_vlx = commit_insn_q.is_vlx; 
+    vrf_req_d.rsp_valid  = commit_insn_valid && &commit_finished_d && mem_insn_finished_d[commit_insn_q.id];
 
     // Request indexes
     vrf_re_o[1] = mem_is_indexed;
