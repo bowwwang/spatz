@@ -7,6 +7,7 @@
 package spatz_pkg;
 
   import rvv_pkg::*;
+  import vtl_pkg::*;
 
   //////////////////
   //  Parameters  //
@@ -63,7 +64,7 @@ package spatz_pkg;
   localparam int GPRWidth = FPU ? 6 : 5;
 
   // Number of parallel vector instructions
-  localparam int unsigned NrParallelInstructions = 4;
+  localparam int unsigned NrParallelInstructions = 8;
 
   // Largest element width that Spatz supports
   localparam vew_e MAXEW = RVD ? EW_64 : EW_32;
@@ -73,7 +74,9 @@ package spatz_pkg;
   //////////////////////
 
   // Vector length register
-  typedef logic [$clog2(MAXVL+1)-1:0] vlen_t;
+  typedef logic [$clog2(MAXVL+1)+1:0] vlen_t;
+  // Extended Vector Length register
+  typedef logic [$clog2(MAXVL+1)+1:0] vlen_ex_t;
   // Vector register
   typedef logic [$clog2(NRVREG)-1:0] vreg_t;
 
@@ -88,6 +91,7 @@ package spatz_pkg;
 
   // Instruction ID
   typedef logic [$clog2(NrParallelInstructions)-1:0] spatz_id_t;
+
 
   /////////////////////
   // Operation Types //
@@ -114,7 +118,7 @@ package spatz_pkg;
     // Slide instructions
     VSLIDEUP, VSLIDEDOWN,
     // Load instructions
-    VLE, VLSE, VLXE,
+    VLE, VLSE, VLXE, VLX,
     // Store instructions
     VSE, VSSE, VSXE,
     // Config instruction
@@ -125,7 +129,9 @@ package spatz_pkg;
     VFADD, VFSUB, VFMUL,
     VFMINMAX, VFSGNJ, VFCMP, VFCLASS,
     VF2I, VF2U, VI2F, VU2F, VF2F,
-    VFMADD, VFMSUB, VFNMSUB, VFNMADD, VSDOTP
+    VFMADD, VFMSUB, VFNMSUB, VFNMADD, VSDOTP,
+    // Indexed instructions
+    VFXMADD
   } op_e;
 
   // Execution units
@@ -150,6 +156,11 @@ package spatz_pkg;
     logic set_vstart;
     logic clear_vstart;
     logic reset_vstart;
+    logic vleforward;
+    logic vtl_redirect;
+    logic set_vtl_index_width;
+    logic set_vtl_blk_size;
+    logic set_vtl_ratio;
   } op_cfg_t;
 
   typedef struct packed {
@@ -182,6 +193,32 @@ package spatz_pkg;
     logic insert;
     logic vmv;
   } op_sld_t;
+
+  typedef struct packed {
+    sp_idxw_e  sp_cfg_index_width;
+    sp_blk_e   sp_cfg_blk_size;
+    sp_ratio_e sp_cfg_ratio;
+  } sp_cfg_t;
+
+  typedef struct packed {
+    logic vm;
+
+    // general flag 
+    logic use_vtl; // if any operand go through VTL
+    logic is_load_idx;
+
+    logic gather_vs1; // are these signal necessary?
+    logic gather_vs2;
+    logic gather_vd;
+
+    logic scatter_vd;
+
+    vreg_t old_vd;
+    
+    sp_cfg_t sp_cfg;
+
+
+  } op_vtl_t;
 
   // Result from decoder
   typedef struct packed {
@@ -221,10 +258,11 @@ package spatz_pkg;
     op_arith_t op_arith;
     op_mem_t op_mem;
     op_sld_t op_sld;
+    op_vtl_t op_vtl;
 
     // Spatz config details
     vtype_t vtype;
-    vlen_t vl;
+    vlen_ex_t vl;
     vlen_t vstart;
   } spatz_req_t;
 
@@ -282,6 +320,9 @@ package spatz_pkg;
 
     // Did the memory request trigger an exception
     logic exc;
+
+    // mark the vlx insn
+    logic is_vlx;
   } vlsu_rsp_t;
 
   ////////////////////
@@ -397,5 +438,41 @@ package spatz_pkg;
     widen_fp8_to_fp16.exponent = operand.exponent;
     widen_fp8_to_fp16.mantissa = {operand.mantissa, 8'b0};
   endfunction
+
+
+  //////////////////////////////
+  // Ventaglio Configurations //
+  //////////////////////////////
+
+  // Ventaglio internal wide datapath
+  // By default, Ventaglio supports 4x scatter/gather
+  localparam int unsigned VENTAGLIO_WFACTOR     = `ifdef VENTAGLIO_WFACTOR `VENTAGLIO_WFACTOR `else 4 `endif;
+  // Buffer size in bit. By default: 4096 (4K-bit)
+  localparam int unsigned VENTAGLIO_BUFFER_SIZE = `ifdef VENTAGLIO_BUFFER_SIZE `VENTAGLIO_BUFFER_SIZE `else 8192 `endif;
+
+  // wide datapath
+  typedef logic [VENTAGLIO_WFACTOR*N_FU*ELENB-1:0] ventaglio_wide_be_t;
+  typedef logic [VENTAGLIO_WFACTOR*N_FU*ELEN-1:0]  ventaglio_wide_data_t;
+  // narrow datapath
+  typedef logic                   [N_FU*ELENB-1:0] ventaglio_narrow_be_t;
+  typedef logic                   [N_FU*ELEN-1:0]  ventaglio_narrow_data_t;
+
+  // Buffer related 
+  // | ------------------------------ Buffer ------------------------------- |
+  // | --- Channel --- | --- Channel --- | --- Channel --- | --- Channel --- |
+  // | -Bank- | -Bank- | -Bank- | -Bank- | -Bank- | -Bank- | -Bank- | -Bank- |
+
+  // Representing the maximum asymetrical bandwidth ratio 
+  // 1:4 --> 4, 1:2 --> 2, by default we support 1:4
+  localparam int unsigned VTGNrChannels        = VENTAGLIO_WFACTOR;
+  localparam int unsigned VTGNrBanksPerChannel = N_FU;
+  // number of read ports, by default: 1
+  localparam int unsigned VTGNrReadPortsPerBank = 1;
+  // Width of a VTG Channel (bit)
+  localparam int unsigned VTGChannelWidth     = VTGNrBanksPerChannel * ELEN;
+  // Width of a VTG Channel (bytes)
+  localparam int unsigned VTGChannelBWidth    = VTGNrBanksPerChannel * ELENB;
+  // Number of rows per VTG Channel
+  localparam int unsigned VTGNrWordsPerChannel  = VENTAGLIO_BUFFER_SIZE / (VTGNrChannels * VTGChannelWidth);
 
 endpackage : spatz_pkg

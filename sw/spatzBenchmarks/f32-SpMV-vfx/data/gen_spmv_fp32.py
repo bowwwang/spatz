@@ -2,6 +2,9 @@
 # Generates data_vfxmacc.h for SpMV fp32 tests (activation fp32, weights fp32)
 # Supports sparse formats: 2:4 and 1:4
 
+# How to use:
+# python3 gen_spmv_fp32.py --format 1_to_4 --N 64 --p_w 128 --seed 1 --out data_vfxmacc.h
+
 import argparse
 import random
 from typing import List, Tuple

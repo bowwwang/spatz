@@ -292,8 +292,7 @@ module ventaglio
   logic scatter_index_load_req;
   // Nothing is running while the index is ready --> preload
   assign index_preload = !(|running_q) && index_preload_valid_q;
-  // Have a valid operation, but no valid index
-  // assign index_load    = spatz_req_valid && !index_valid_q;
+
   always_comb begin : index_req_gen
     index_load = 0;
     if (!spatz_req_valid) begin // no sparse-op in-fly
