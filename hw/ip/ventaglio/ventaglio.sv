@@ -171,6 +171,21 @@ module ventaglio
   // signals for gather or scatter
   logic is_gather, is_scatter;
 
+  // helper signal for buffer init
+  logic is_scatter_d, is_scatter_q, scatter_done; 
+  `FF(is_scatter_q, is_scatter_d, '0)
+  assign is_scatter_d = is_scatter;
+  assign scatter_done = !is_scatter_d && is_scatter_q;
+
+  logic init_vd_to_zero_d, init_vd_to_zero_q;
+  `FF(init_vd_to_zero_q, init_vd_to_zero_d, '0)
+  always_comb begin : proc_vd_init
+    init_vd_to_zero_d = init_vd_to_zero_q;
+    if (scatter_done) init_vd_to_zero_d = 1'b0;
+    if (spatz_req.op_vtl.init_vd_to_zero) init_vd_to_zero_d = 1'b1;
+  end 
+
+
   logic req_proceed;
   logic last_addr_bit_d, last_addr_bit_q;
   `FF(last_addr_bit_q, last_addr_bit_d, '0)
@@ -234,6 +249,15 @@ module ventaglio
   function automatic logic [$clog2(VTGNrWordsPerChannel)-1:0] f_row(vrf_addr_t addr);
     f_row = addr[$clog2(VTGNrWordsPerChannel * VTGNrChannels)-1:$clog2(VTGNrChannels)];
   endfunction: f_row
+
+  // Replace bytes whose byte-enable is 0 with zero. Used for vfxmul.vrf init.                                                                                                                                   
+  function automatic ventaglio_narrow_data_t zero_fill_disabled_bytes(                                                                                                                                           
+      ventaglio_narrow_data_t d,                                                                                                                                                                                 
+      ventaglio_narrow_be_t   be                                                                                                                                                                                 
+  );                                                                                                                                                                                                             
+    for (int b = 0; b < $bits(d)/8; b++)
+      zero_fill_disabled_bytes[8*b +: 8] = be[b] ? d[8*b +: 8] : 8'h00;                                                                                                                                          
+  endfunction
 
   // In VRF we address bank words, in VTG we address channels
   // VTG access granularity is channel
@@ -312,20 +336,30 @@ module ventaglio
         end 
       end
     end else begin // priority 2: scatter requests
-      for (int unsigned b_channel = 0; b_channel < VTGNrChannels; b_channel++) begin   // channels from the bank side
-        for (int unsigned s_channel = 0; s_channel < VTGNrChannels; s_channel++) begin // channels from the scatter datapath side
-          if (scatter_write_request[b_channel][s_channel][VRF_WD]) begin
-            waddr[b_channel]                  = f_row(scatter_waddr[s_channel][VRF_WD]);
-            wdata[b_channel]                  = scatter_wdata[s_channel][VRF_WD];
-            we[b_channel]                     = 1'b1;
-            wbe[b_channel]                    = scatter_wbe[s_channel][VRF_WD];
-            scatter_wvalid[s_channel][VRF_WD] = 1'b1;
+        for (int unsigned b_channel = 0; b_channel < VTGNrChannels; b_channel++) begin
+          for (int unsigned s_channel = 0; s_channel < VTGNrChannels; s_channel++) begin
+            if (scatter_write_request[b_channel][s_channel][VRF_WD]) begin
+              waddr[b_channel]                  = f_row(scatter_waddr[s_channel][VRF_WD]);
+              we[b_channel]                     = 1'b1;
+              scatter_wvalid[s_channel][VRF_WD] = 1'b1;
+
+              if (is_scatter && init_vd_to_zero_d) begin
+                // vfxmul.vrf init semantics: write the entire row, zero-filling
+                // any lane the scatter datapath did not target.
+                wdata[b_channel] = zero_fill_disabled_bytes(
+                                     scatter_wdata[s_channel][VRF_WD],
+                                     scatter_wbe  [s_channel][VRF_WD]);
+                wbe  [b_channel] = '1;
+              end else begin
+                // vfxmacc.vrf accumulate semantics: write only the indexed lanes.
+                wdata[b_channel] = scatter_wdata[s_channel][VRF_WD];
+                wbe  [b_channel] = scatter_wbe  [s_channel][VRF_WD];
+              end
+            end
           end
         end
+        wvalid_o[VRF_WD] = post_scatter_wvalid[0];
       end
-      // assign the scatter write valid signal to the output 
-      wvalid_o[VRF_WD]     = post_scatter_wvalid[0];
-    end 
 
   end : proc_write
 
