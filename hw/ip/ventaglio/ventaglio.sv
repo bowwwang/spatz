@@ -26,7 +26,6 @@ module ventaglio
     input  logic             spatz_req_valid_i,
     output logic             spatz_req_ready_o,
     input  logic             spatz_vfu_req_ready_i,
-    // input  logic             vtl_index_preload_valid_i,
     // VTL response
     output logic             vtl_rsp_valid_o,
     output vsldu_rsp_t       vtl_rsp_o,
@@ -135,28 +134,8 @@ module ventaglio
   vrf_addr_t vreg_idx_counter_q;
   `FF(vreg_idx_counter_q, vreg_idx_counter_d, '0)
 
-  // logic index_requested;
-  // `FF(index_requested, vrf_re_o, '0)
-
   logic index_valid_d, index_valid_q;
   `FF(index_valid_q, index_valid_d, '0)
-
-  // naive index valid logic handling
-  // always_comb begin : proc_index_valid
-  //   index_valid_d = index_valid_q;
-  //   if (spatz_vfu_req_ready_i) begin 
-  //     // INVALID when VFU has a new req to process 
-  //     index_valid_d = 1'b0;
-  //   end
-  //   if (index_requested) begin 
-  //     // A new index is coming
-  //     index_valid_d = 1'b1;
-  //   end
-  //   if (vrf_rvalid_i) begin 
-  //     // VALID when a new index is available from read
-  //     index_valid_d = 1'b1;
-  //   end 
-  // end 
 
   always_comb begin : proc_index_valid                                                                                                                                                                           
     index_valid_d = index_valid_q;    
@@ -174,48 +153,11 @@ module ventaglio
     end
   end
 
-  // `vidx` is the VRF id storing the indices
-  // This information is extracted from VLX or VFXMACC instructions 
-  // We cover two scenarios:
-  // 1. A new index is loaded with VLX                           --> use VLX info to load index 
-  // 2. Each VFXMACC operation requires more than 'VRFWordWidth' --> use VFX info to load index 
-
-  // NOTE: Current Index loading solely depends on `vlx` info
-  // vreg_t vidx_d, vidx_q;
-  // `FF(vidx_q, vidx_d, '0)
-  // One step buffer in case the previous index request does not finish
-  // vreg_t vidx_buf_d, vidx_buf_q;
-  // `FF(vidx_buf_q, vidx_buf_d, '0)
-
-  // We need a buffer here to track the next op 
-  logic last_op_beat;
-  // logic next_is_sparse_op;
+  // Index vreg comes directly from the latched request's explicit operand.
   vreg_t vidx;
-  // vreg_t next_vidx_d, next_vidx_q;
-  // logic  next_valid_d, next_valid_q;
-
-  // assign next_is_sparse_op = spatz_req_i.ex_unit == VFU && spatz_req_i.op_vtl.use_vtl;
-
-  // `FF(next_valid_q, next_valid_d, '0)
-  // `FF(next_vidx_q,  next_vidx_d, '0)
-
-  // always_comb begin
-  //   next_valid_d = next_valid_q;
-  //   next_vidx_d  = next_vidx_q;
-  //   if (spatz_req_valid && next_is_sparse_op && next_valid_q == 0) begin 
-  //     next_valid_d = spatz_req_valid_i;
-  //     next_vidx_d  = spatz_req_i.op_vtl.idx_vreg; 
-  //   end 
-  //   if (vrf_re_o) begin
-  //     next_valid_d = '0;
-  //     next_vidx_d  = '0;
-  //   end
-  // end
 
   always_comb begin : proc_idx_addr_gen
     vidx        = spatz_req.op_vtl.idx_vreg;
-    // vidx = (spatz_req_valid) ? ( (next_is_sparse_op && !next_valid_q && spatz_req_valid_i) ? spatz_req_i.op_vtl.idx_vreg : next_vidx_q) : spatz_req_i.op_vtl.idx_vreg;
-
     // address generation
     vrf_raddr_o     = {vidx, $clog2(NrWordsPerVector)'(1'b0)} + vreg_idx_counter_q;
     if (vreg_idx_counter_en)
@@ -238,74 +180,22 @@ module ventaglio
 
   logic [4:0] num_beats_per_op;
   // TODO: only considered N_FU=4
-  assign num_beats_per_op = (spatz_req.vtype.vsew == EW_32) ? {spatz_req.vl >> 3}[7:0] : (spatz_req.vl[7:0]);
+  assign num_beats_per_op = (spatz_req.vtype.vsew == EW_32) ? (spatz_req.vl >> 3) : spatz_req.vl[7:0];
 
   logic [4:0] op_beat_cnt_d, op_beat_cnt_q;
   `FF(op_beat_cnt_q, op_beat_cnt_d, '0)
 
   always_comb begin 
-    last_op_beat  = 1'b0;
     op_beat_cnt_d = op_beat_cnt_q;
     // counter proceed 
-    if (is_gather && rvalid_o && req_proceed) op_beat_cnt_d = op_beat_cnt_q + 1;
-    // time to load idx?
-    if (op_beat_cnt_q == num_beats_per_op - 2) begin 
-      last_op_beat  = 1'b1;
-    end 
-    if (op_beat_cnt_q == num_beats_per_op - 1) begin
-      op_beat_cnt_d = 0;
-    end
+    if (is_gather && rvalid_o && req_proceed ) op_beat_cnt_d = op_beat_cnt_q + 1;
+    if (op_beat_cnt_q == num_beats_per_op - 1) op_beat_cnt_d = 0;
   end 
 
-
-  // Logic to issue the read request for loading indices
-  // 1. When no gather/scatter is operating, and controller informed the index is ready
-  // 2. TODO: When the current indices is depleted
-
-  /*
-  logic index_preload_valid_d, index_preload_valid_q;
-  `FF(index_preload_valid_q, index_preload_valid_d, '0)
-
-  always_comb begin 
-    index_preload_valid_d = index_preload_valid_q;
-    if (vtl_index_preload_valid_i) begin // controller informed the index is ready
-      index_preload_valid_d = 1'b1;
-    end 
-    // we read back an index vector 
-    // TODO: this is not correct!!! We do not consider the indices depletion scenario
-    if (vrf_rvalid_i) begin 
-      index_preload_valid_d = 1'b0;
-    end 
-  end 
-
-  logic index_preload;
-  logic index_load;
-  logic scatter_index_load_req;
-  // Nothing is running while the index is ready --> preload
-  assign index_preload = !(|running_q) && index_preload_valid_q;
-
-  always_comb begin : index_req_gen
-    index_load = 0;
-    if (!spatz_req_valid) begin // no sparse-op in-fly
-      if (next_is_sparse_op && spatz_req_valid_i)
-        index_load = 1;
-    end else begin  // have a ongoing sparse-op
-      if (( (next_is_sparse_op && !next_valid_q && spatz_req_valid_i) || next_valid_q) && last_op_beat)
-      // if (next_valid_q && last_op_beat)
-        index_load = 1;
-    end
-
-    if (!index_valid_q && next_valid_q) begin
-      index_load = 1;
-    end
-  end 
-
-  assign vrf_re_o      = index_preload | index_load;
-  */
-
+  // Read the index whenever a vfx is latched and we don't yet have valid data.                                                                                                                                  
+  // The controller's standard scoreboard gates the actual VRF access via the                                                                                                                                    
+  // RAW dep on op_vtl.idx_vreg 
   assign vrf_re_o = spatz_req_valid && !index_valid_q;
-  // This is not required, sudo ID used
-  // In controller, we do not check the dependency issued from VTL
   assign vrf_id_o[0]     = spatz_req.id;
 
   /******************************/

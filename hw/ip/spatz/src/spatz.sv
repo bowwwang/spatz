@@ -259,9 +259,6 @@ module spatz import spatz_pkg::*; import rvv_pkg::*; import fpnew_pkg::*; #(
 
   vrf_addr_t vtl_index_raddr;
 
-  // signal for VTL preloading indices
-  logic vtl_index_preload_valid;
-
   spatz_controller #(
     .NrVregfilePorts  (NrReadPorts+NrWritePorts),
     .NrWritePorts     (NrWritePorts            ),
@@ -286,7 +283,6 @@ module spatz import spatz_pkg::*; import rvv_pkg::*; import fpnew_pkg::*; #(
     // Spatz request
     .spatz_req_valid_o(spatz_req_valid ),
     .spatz_req_o      (spatz_req       ),
-    // .vtl_index_preload_valid_o(vtl_index_preload_valid),
     // VFU
     .vfu_req_ready_i  (vfu_req_ready   ),
     .vfu_rsp_valid_i  (vfu_rsp_valid   ),
@@ -405,8 +401,6 @@ module spatz import spatz_pkg::*; import rvv_pkg::*; import fpnew_pkg::*; #(
     .spatz_req_ready_o    (/* Not unsed for now*/                         ),
     // req_ready signal from VFU
     .spatz_vfu_req_ready_i(vfu_vtl_req_ready                              ),
-    // index is ready
-    // .vtl_index_preload_valid_i(vtl_index_preload_valid),
     // Response
     .vtl_rsp_valid_o  (/* Not unsed for now*/                         ),
     .vtl_rsp_o        (/* Not unsed for now*/                         ),
