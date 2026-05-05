@@ -1292,6 +1292,39 @@ module spatz_decoder
           spatz_req.op_vtl.idx_vreg   = vs1_field;   // explicit index vreg                                                                                                                                              
         end  
 
+        riscv_instr::VFXMUL_VRF: begin                                                                                                                                                                                   
+          automatic vreg_t       vd_field  = decoder_req_i.instr[11:7];
+          automatic vreg_t       vs2_field = decoder_req_i.instr[24:20];   // weight                                                                                                                                     
+          automatic vreg_t       vs1_field = decoder_req_i.instr[31:27];   // index                                                                                                                                      
+          automatic logic [1:0]  funct2    = decoder_req_i.instr[26:25];                                                                                                                                                 
+                                                                                                                                                                                                                         
+          // funct2=01 reserved for vfxmul (this op); other values illegal for now                                                                                                                                       
+          if (funct2 != 2'b01) illegal_instr = 1'b1;                                                                                                                                                                     
+                                                                                                                                                                                                                         
+          spatz_req.op        = VFMUL;                                                                                                                                                                                   
+          spatz_req.ex_unit   = VFU;
+          spatz_req.rm        = fpu_rnd_mode_i;                                                                                                                                                                          
+          spatz_req.fm        = fpu_fmt_mode_i;                                                                                                                                                                          
+                                                                                                                                                                                                                         
+          // Result vreg (write-only — no accumulation, vd_is_src stays 0)                                                                                                                                               
+          spatz_req.vd        = vd_field;                                                                                                                                                                                
+          spatz_req.use_vd    = 1'b1;                                                                                                                                                                                    
+                        
+          // Weight goes through VFU's vs1 path (mirrors VFXMACC_VRF wiring)                                                                                                                                             
+          spatz_req.vs1       = vs2_field;
+          spatz_req.use_vs1   = 1'b1;                                                                                                                                                                                    
+                        
+          // FP scalar value (substituted upstream by FPU sequencer via use_fs1)                                                                                                                                         
+          spatz_req.rs2       = decoder_req_i.rs1;
+                                                                                                                                                                                                                         
+          // VTL plumbing — scatter only (no gather of old vd since vd is write-only)                                                                                                                                    
+          spatz_req.op_vtl.use_vtl    = 1'b1;
+          spatz_req.op_vtl.scatter_vd = 1'b1;
+          spatz_req.op_vtl.init_vd_to_zero = 1'b1;
+          // op_vtl.gather_vd intentionally NOT set
+          spatz_req.op_vtl.idx_vreg   = vs1_field;
+        end  
+
         // Move to the scalar FP RF
         riscv_instr::VFMV_F_S: begin
           if (spatz_pkg::FPU) begin

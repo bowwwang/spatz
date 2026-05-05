@@ -10,6 +10,7 @@
 module ventaglio
   import spatz_pkg::*;
   import rvv_pkg::*;
+  import vtl_pkg::*;
   #(
     parameter int unsigned NrReadPorts  = 1,
     parameter int unsigned NrWritePorts = 1,
@@ -171,21 +172,6 @@ module ventaglio
   // signals for gather or scatter
   logic is_gather, is_scatter;
 
-  // helper signal for buffer init
-  logic is_scatter_d, is_scatter_q, scatter_done; 
-  `FF(is_scatter_q, is_scatter_d, '0)
-  assign is_scatter_d = is_scatter;
-  assign scatter_done = !is_scatter_d && is_scatter_q;
-
-  logic init_vd_to_zero_d, init_vd_to_zero_q;
-  `FF(init_vd_to_zero_q, init_vd_to_zero_d, '0)
-  always_comb begin : proc_vd_init
-    init_vd_to_zero_d = init_vd_to_zero_q;
-    if (scatter_done) init_vd_to_zero_d = 1'b0;
-    if (spatz_req.op_vtl.init_vd_to_zero) init_vd_to_zero_d = 1'b1;
-  end 
-
-
   logic req_proceed;
   logic last_addr_bit_d, last_addr_bit_q;
   `FF(last_addr_bit_q, last_addr_bit_d, '0)
@@ -264,7 +250,81 @@ module ventaglio
   typedef logic [$clog2(VTGNrWordsPerChannel)-1:0] vtg_row_addr_t;
 
   /******************************/
-  /*          Signals           */ 
+  /*    Init-Zero Sequencer     */
+  /******************************/
+  // For vfxmul.vrf, walk vd's bank rows in ventaglio's internal banks,
+  // writing 0 to all VTGNrChannels in parallel each cycle. Backpressure
+  // VFU scatter writes via wvalid_o until init completes, so spatz_req
+  // metadata never has to align with the VFU's pipelined writes — by the
+  // time the VFU's writes arrive, vd is already fully zeroed.
+
+  typedef enum logic [1:0] { V_IDLE, V_INIT_ZERO, V_RUNNING } vstate_e;
+  vstate_e state_d, state_q;
+  `FF(state_q, state_d, V_IDLE)
+
+  vtg_row_addr_t init_row_d, init_row_q;
+  `FF(init_row_q, init_row_d, '0)
+
+  // First bank row in ventaglio's internal banks corresponding to spatz_req.vd
+  vtg_row_addr_t vd_row_start;
+  assign vd_row_start = f_row({spatz_req.vd, $clog2(NrWordsPerVector)'(1'b0)});
+
+  // Number of bank rows spanned by the EXPANDED vd group.
+  //   expanded_words = LMUL × NrWordsPerVector × sp_factor
+  //   sp_factor      = M/N (ratio expansion: 1:4 → 4, 2:4 → 2, 1:8 → 8, ...)
+  //   rows           = ceil(expanded_words / VTGNrChannels)
+  // The previous version ignored sp_factor, undercounting rows for any
+  // VTL-mapped ops that use sparse expansion.
+  function automatic logic [5:0] vd_init_rows(vlmul_e lmul, sp_ratio_e sp_ratio);
+    int unsigned base_words;
+    int unsigned sp_factor;
+    unique case (lmul)
+      LMUL_1 : base_words = 1 * NrWordsPerVector;
+      LMUL_2 : base_words = 2 * NrWordsPerVector;
+      LMUL_4 : base_words = 4 * NrWordsPerVector;
+      LMUL_8 : base_words = 8 * NrWordsPerVector;
+      default: base_words = NrWordsPerVector;
+    endcase
+    unique case (sp_ratio)
+      SP_RATIO_125: sp_factor = 8;  // 1:8
+      SP_RATIO_025: sp_factor = 4;  // 1:4
+      SP_RATIO_050: sp_factor = 2;  // 2:4
+      default     : sp_factor = 1;  // SP_RATIO_075 (3:4) or unset
+    endcase
+    vd_init_rows = (base_words * sp_factor + VTGNrChannels - 1) / VTGNrChannels;
+  endfunction
+
+  logic [5:0] vd_row_end;
+  assign vd_row_end = {2'b00, vd_row_start} +
+                      vd_init_rows(spatz_req.vtype.vlmul,
+                                   spatz_req.op_vtl.sp_cfg.sp_cfg_ratio) - 1;
+
+  logic init_phase;
+  assign init_phase = (state_q == V_INIT_ZERO);
+
+  always_comb begin : proc_init_zero_fsm
+    state_d    = state_q;
+    init_row_d = init_row_q;
+    unique case (state_q)
+      V_IDLE: if (new_vtl_request_d) begin
+        if (spatz_req.op_vtl.init_vd_to_zero) begin
+          state_d    = V_INIT_ZERO;
+          init_row_d = vd_row_start;
+        end else begin
+          state_d = V_RUNNING;
+        end
+      end
+      V_INIT_ZERO: begin
+        if (init_row_q == vd_row_end) state_d = V_RUNNING;
+        else                          init_row_d = init_row_q + 1'b1;
+      end
+      V_RUNNING: if (vfu_rsp_valid_i && (vfu_rsp_i.id == spatz_req.id)) state_d = V_IDLE;
+      default: state_d = V_IDLE;
+    endcase
+  end
+
+  /******************************/
+  /*          Signals           */
   /******************************/
 
   // signals for gather or scatter
@@ -325,7 +385,17 @@ module ventaglio
     wvalid_o       = '0;
     scatter_wvalid = '0;
 
-    if (!is_scatter) begin // priority 1: normal requests
+    if (init_phase) begin
+      // Init-zero pass: write 0 to every channel at the current row.
+      // wvalid_o stays '0 → VFU's slave-port scatter writes are stalled
+      // until V_RUNNING.
+      for (int unsigned channel = 0; channel < VTGNrChannels; channel++) begin
+        waddr[channel] = init_row_q;
+        wdata[channel] = '0;
+        we[channel]    = 1'b1;
+        wbe[channel]   = '1;
+      end
+    end else if (!is_scatter) begin // priority 1: normal requests
       for (int unsigned channel = 0; channel < VTGNrChannels; channel++) begin
         if (write_request[channel][VRF_WD]) begin
           waddr[channel]         = f_row(waddr_i[VRF_WD]);
@@ -333,34 +403,22 @@ module ventaglio
           we[channel]            = 1'b1;
           wbe[channel]           = wbe_i[VRF_WD];
           wvalid_o[VRF_WD]       = 1'b1;
-        end 
+        end
       end
     end else begin // priority 2: scatter requests
-        for (int unsigned b_channel = 0; b_channel < VTGNrChannels; b_channel++) begin
-          for (int unsigned s_channel = 0; s_channel < VTGNrChannels; s_channel++) begin
-            if (scatter_write_request[b_channel][s_channel][VRF_WD]) begin
-              waddr[b_channel]                  = f_row(scatter_waddr[s_channel][VRF_WD]);
-              we[b_channel]                     = 1'b1;
-              scatter_wvalid[s_channel][VRF_WD] = 1'b1;
-
-              if (is_scatter && init_vd_to_zero_d) begin
-                // vfxmul.vrf init semantics: write the entire row, zero-filling
-                // any lane the scatter datapath did not target.
-                wdata[b_channel] = zero_fill_disabled_bytes(
-                                     scatter_wdata[s_channel][VRF_WD],
-                                     scatter_wbe  [s_channel][VRF_WD]);
-                wbe  [b_channel] = '1;
-              end else begin
-                // vfxmacc.vrf accumulate semantics: write only the indexed lanes.
-                wdata[b_channel] = scatter_wdata[s_channel][VRF_WD];
-                wbe  [b_channel] = scatter_wbe  [s_channel][VRF_WD];
-              end
-            end
+      for (int unsigned b_channel = 0; b_channel < VTGNrChannels; b_channel++) begin
+        for (int unsigned s_channel = 0; s_channel < VTGNrChannels; s_channel++) begin
+          if (scatter_write_request[b_channel][s_channel][VRF_WD]) begin
+            waddr[b_channel]                  = f_row(scatter_waddr[s_channel][VRF_WD]);
+            wdata[b_channel]                  = scatter_wdata[s_channel][VRF_WD];
+            we[b_channel]                     = 1'b1;
+            wbe[b_channel]                    = scatter_wbe[s_channel][VRF_WD];
+            scatter_wvalid[s_channel][VRF_WD] = 1'b1;
           end
         end
-        wvalid_o[VRF_WD] = post_scatter_wvalid[0];
       end
-
+      wvalid_o[VRF_WD] = post_scatter_wvalid[0];
+    end
   end : proc_write
 
   // read mapping
@@ -545,6 +603,47 @@ module ventaglio
   //              vfu_rsp_valid_i, |running_q,                                                                                                                                                                        
   //              is_gather, is_scatter);                                                                                                                                                                             
   //   end                                                                                                                                                                                                            
-  // end  
+  // end
+
+  // FSM trace: emit to ventaglio_fsm_trace.log instead of the transcript.
+  // integer vtg_log_fd;
+  // initial begin
+  //   vtg_log_fd = $fopen("ventaglio_fsm_trace.log", "w");
+  //   if (vtg_log_fd) $fdisplay(vtg_log_fd, "# time | event | details");
+  // end
+  // final begin
+  //   if (vtg_log_fd) $fclose(vtg_log_fd);
+  // end
+
+  // always_ff @(posedge clk_i) begin
+  //   if (vtg_log_fd) begin
+  //     if (new_vtl_request_d)
+  //       $fdisplay(vtg_log_fd,
+  //         "%0t NEW       id=%0d op=%0d init_vd=%b vd=%0d vlmul=%0d row_start=%0d row_end=%0d state=%0d",
+  //         $time, spatz_req.id, spatz_req.op,
+  //         spatz_req.op_vtl.init_vd_to_zero, spatz_req.vd, spatz_req.vtype.vlmul,
+  //         vd_row_start, vd_row_end, state_q);
+
+  //     if (state_q != state_d)
+  //       $fdisplay(vtg_log_fd,
+  //         "%0t STATE     %0d -> %0d  init_row_q=%0d spatz_req.id=%0d",
+  //         $time, state_q, state_d, init_row_q, spatz_req.id);
+
+  //     if (state_q == V_INIT_ZERO)
+  //       $fdisplay(vtg_log_fd,
+  //         "%0t INIT_ROW  init_row_q=%0d vd_row_end=%0d we=0x%h wvalid_o=0x%h",
+  //         $time, init_row_q, vd_row_end, we, wvalid_o);
+
+  //     if (vfu_rsp_valid_i)
+  //       $fdisplay(vtg_log_fd,
+  //         "%0t RSP       vfu_rsp_id=%0d state=%0d spatz_req.id=%0d",
+  //         $time, vfu_rsp_i.id, state_q, spatz_req.id);
+
+  //     if (is_scatter)
+  //       $fdisplay(vtg_log_fd,
+  //         "%0t SCATTER   state=%0d spatz_req.id=%0d op=%0d init_vd=%b",
+  //         $time, state_q, spatz_req.id, spatz_req.op, spatz_req.op_vtl.init_vd_to_zero);
+  //   end
+  // end
 
 endmodule : ventaglio

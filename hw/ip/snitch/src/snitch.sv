@@ -2725,7 +2725,8 @@ module snitch import snitch_pkg::*; import riscv_instr::*; #(
         end
       end
 
-      riscv_instr::VFXMACC_VRF: begin                                                                                                                                                                                  
+      riscv_instr::VFXMACC_VRF,
+      riscv_instr::VFXMUL_VRF: begin                                                                                                                                                                                  
         if (RVV && RVF) begin                                                                                                                                                                                          
           write_rd        = 1'b0;                                                                                                                                                                                      
           uses_rd         = 1'b0;                                                                                                                                                                                      
