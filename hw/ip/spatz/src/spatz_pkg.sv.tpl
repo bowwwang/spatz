@@ -237,7 +237,7 @@ package spatz_pkg;
     logic scatter_vd;
 
     vreg_t old_vd;
-    
+    vreg_t idx_vreg; // index vreg for vfxmacc.vrf
     sp_cfg_t sp_cfg;
 
 

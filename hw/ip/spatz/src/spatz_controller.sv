@@ -40,7 +40,7 @@ module spatz_controller
     // Spatz request
     output logic                                   spatz_req_valid_o,
     output spatz_req_t                             spatz_req_o,
-    output logic                                   vtl_index_preload_valid_o,
+    // output logic                                   vtl_index_preload_valid_o,
     // VFU
     input  logic                                   vfu_req_ready_i,
     input  logic                                   vfu_rsp_valid_i,
@@ -199,10 +199,10 @@ module spatz_controller
       end // spatz_req.op == VCSR
 
       // set vreg mapping upon receiving a vlx insn
-      if (spatz_req.op == VLX) begin 
-        vtl_index_mapping_d[spatz_req.op_vtl.old_vd].valid     = 1'b1;
-        vtl_index_mapping_d[spatz_req.op_vtl.old_vd].index_vid = vtl_index_mapping_q[spatz_req.op_vtl.old_vd].valid ? vtl_index_mapping_q[spatz_req.op_vtl.old_vd].index_vid : next_idx_id; // TODO: need to check first avail
-      end 
+      // if (spatz_req.op == VLX) begin 
+      //   vtl_index_mapping_d[spatz_req.op_vtl.old_vd].valid     = 1'b1;
+      //   vtl_index_mapping_d[spatz_req.op_vtl.old_vd].index_vid = vtl_index_mapping_q[spatz_req.op_vtl.old_vd].valid ? vtl_index_mapping_q[spatz_req.op_vtl.old_vd].index_vid : next_idx_id; // TODO: need to check first avail
+      // end 
 
       // Change vtype and vl if we have a config instruction
       if (spatz_req.op == VCFG) begin
@@ -342,8 +342,8 @@ module spatz_controller
   // To track if the indices used for scatter/gather is already in the VTL buffer
   typedef struct packed {
     logic                          use_vtl;
-    logic                    is_index_load;
-    logic                      index_valid;
+    // logic                    is_index_load;
+    // logic                      index_valid;
     logic   [NrWritePorts-1:0]       write;
     logic   [NrReadPorts-1:0]         read;
   } vtl_table_t;
@@ -378,9 +378,9 @@ module spatz_controller
 
   // signal to indicate the index is ready to use
   // TODO: consider the renewal situation
-  logic vtl_index_preload_valid_d, vtl_index_preload_valid_q;
-  `FF(vtl_index_preload_valid_q, vtl_index_preload_valid_d, '0)
-  assign vtl_index_preload_valid_o = vtl_index_preload_valid_d;
+  // logic vtl_index_preload_valid_d, vtl_index_preload_valid_q;
+  // `FF(vtl_index_preload_valid_q, vtl_index_preload_valid_d, '0)
+  // assign vtl_index_preload_valid_o = vtl_index_preload_valid_d;
 
   always_comb begin : scoreboard
     // Maintain stated
@@ -390,7 +390,7 @@ module spatz_controller
     narrow_wide_d            = narrow_wide_q;
     wrote_result_narrowing_d = wrote_result_narrowing_q;
     vtl_table_d              = vtl_table_q;
-    vtl_index_preload_valid_d = vtl_index_preload_valid_q;
+    // vtl_index_preload_valid_d = vtl_index_preload_valid_q;
     sb_vtl_redirect_read_o    = '0;
     sb_vtl_redirect_write_o   = '0;
 
@@ -407,20 +407,20 @@ module spatz_controller
       // sb_id_i[port] - the instruction ID that is using this port
       // &(~scoreboard_q[sb_id_i[port]].deps | wrote_result_q) - we either do not care about the other instructions, or they have wrote to vrf
       //                                                         in words: All dependencies must have written their results in the previous cycle
-      sb_enable[port]   = sb_enable_i[port] && &(~scoreboard_q[sb_id_i[port]].deps | wrote_result_q) && (!(|scoreboard_q[sb_id_i[port]].deps) || !scoreboard_q[sb_id_i[port]].prevent_chaining);
+      sb_enable_o[port]   = sb_enable_i[port] && &(~scoreboard_q[sb_id_i[port]].deps | wrote_result_q) && (!(|scoreboard_q[sb_id_i[port]].deps) || !scoreboard_q[sb_id_i[port]].prevent_chaining);
       // Overwrite the enable signal if the instruction uses VTL but the index is not ready
       // blocking condition: 1. This instruction use VTL, and VTL is enabled
       //                     2. The requested operand is in VTL
       //                     3. check is the index is ready or not
-      sb_enable_o[port] = (vtl_en_q && vtl_table_q[sb_id_i[port]].use_vtl && vtl_table_wr[sb_id_i[port]][port]) ? (vtl_table_q[sb_id_i[port]].index_valid && sb_enable[port]) : sb_enable[port];
+      // sb_enable_o[port] = (vtl_en_q && vtl_table_q[sb_id_i[port]].use_vtl && vtl_table_wr[sb_id_i[port]][port]) ? (vtl_table_q[sb_id_i[port]].index_valid && sb_enable[port]) : sb_enable[port];
       
       // VTL index preload logic
       // scoreboard enable the read request from VTL, if the `vtl_index_preload_valid_q` is set
       // We then set `vtl_index_preload_valid_d` to `0` indicating the index has been read
-      if (vtl_index_preload_valid_q) begin
-        sb_enable_o[SB_VSLDU_VS2_RD] = sb_enable_i[SB_VSLDU_VS2_RD];
-        vtl_index_preload_valid_d = 1'b0;
-      end
+      // if (vtl_index_preload_valid_q) begin
+      //   sb_enable_o[SB_VSLDU_VS2_RD] = sb_enable_i[SB_VSLDU_VS2_RD];
+      //   vtl_index_preload_valid_d = 1'b0;
+      // end
 
       if (sb_enable_o[port] && vtl_en_q) begin : proc_vtl_rw_o
         if (port < NrReadPorts) begin // read
@@ -481,9 +481,9 @@ module spatz_controller
 
       // VTL index preload logic
       // if this is an index load instruction, inform VTL the index is ready
-      if (vtl_table_q[vlsu_rsp_i.id].is_index_load) begin
-        vtl_index_preload_valid_d = 1'b1;
-      end
+      // if (vtl_table_q[vlsu_rsp_i.id].is_index_load) begin
+      //   vtl_index_preload_valid_d = 1'b1;
+      // end
 
       scoreboard_d[vlsu_rsp_i.id]             = '0;
       narrow_wide_d[vlsu_rsp_i.id]            = 1'b0;
@@ -511,16 +511,13 @@ module spatz_controller
     // Initialize the scoreboard metadata if we have a new instruction issued.
     if (spatz_req_valid && spatz_req.ex_unit != CON) begin
       // VTL forward extension
-      vtl_table_d[spatz_req.id] = '{use_vtl: 1'b0, is_index_load: 1'b0, index_valid: 1'b0, write: '0, read: '0}; // init a table entry
+      vtl_table_d[spatz_req.id] = '{use_vtl: 1'b0, write: '0, read: '0}; // init a table entry
       if (vtl_en_q) begin 
         case (spatz_req.ex_unit)
           VFU: begin
             // First mark this instruction with VTL usage
             if (spatz_req.op_vtl.use_vtl) begin
               vtl_table_d[spatz_req.id].use_vtl = 1'b1;
-              // TODO (bowwang):
-              // we currently do not have dependency check for index
-              vtl_table_d[spatz_req.id].index_valid = 1'b1;
             end
             // Then mark the request from which port should be redirected to VTL
             // Let's say if v8 is mapped to VTL
@@ -549,12 +546,12 @@ module spatz_controller
               vtl_table_d[spatz_req.id].read[SB_VLSU_VD_RD] = 1'b1; // r
             end 
             // mark the index loading instruction
-            if (spatz_req.op_vtl.is_load_idx && spatz_req.op_mem.is_load) begin 
-              vtl_table_d[spatz_req.id].is_index_load = 1'b1; // r
-            end 
+            // if (spatz_req.op_vtl.is_load_idx && spatz_req.op_mem.is_load) begin 
+            //   vtl_table_d[spatz_req.id].is_index_load = 1'b1; // r
+            // end 
           end
           default: begin 
-            vtl_table_d[spatz_req.id] = '{use_vtl: 1'b0, is_index_load: 1'b0, index_valid: 1'b0, write: '0, read: '0};
+            vtl_table_d[spatz_req.id] = '{use_vtl: 1'b0, write: '0, read: '0};
           end
         endcase
       end 
@@ -571,6 +568,13 @@ module spatz_controller
       if (spatz_req.vd_is_src) begin
         scoreboard_d[spatz_req.id].deps[write_table_d[spatz_req.vd].id] |= write_table_d[spatz_req.vd].valid;
         read_table_d[spatz_req.vd] = {spatz_req.id, 1'b1};
+      end
+
+      // RAW hazard on the explicit index vreg used by vfxmacc.vrf
+      if (spatz_req.op_vtl.use_vtl) begin                                                                                                                                                                              
+        scoreboard_d[spatz_req.id].deps[write_table_d[spatz_req.op_vtl.idx_vreg].id] |=
+            write_table_d[spatz_req.op_vtl.idx_vreg].valid;                                                                                                                                                            
+        read_table_d[spatz_req.op_vtl.idx_vreg] = {spatz_req.id, 1'b1}; 
       end
 
       // WAW and WAR hazards
@@ -677,10 +681,11 @@ module spatz_controller
           if (vtl_en_q) begin 
             spatz_req.op_vtl.sp_cfg = VTL_cfg_q;
           end
-          if (spatz_req.op == VLX) begin 
-            spatz_req.vd = (vtl_index_mapping_q[spatz_req.op_vtl.old_vd].valid) ? vtl_index_mapping_q[spatz_req.op_vtl.old_vd].index_vid : next_idx_id;                               // TODO: need to check avail
-            VTL_idx_occupied_Vreg_d[spatz_req.vd] = 1'b1;  // TODO: this reg also need to be rest when VTL cfg
-          end else if (VTLVreg_q[spatz_req.op_vtl.old_vd] && vtl_en_q) begin 
+          // if (spatz_req.op == VLX) begin 
+          //   spatz_req.vd = (vtl_index_mapping_q[spatz_req.op_vtl.old_vd].valid) ? vtl_index_mapping_q[spatz_req.op_vtl.old_vd].index_vid : next_idx_id;                               // TODO: need to check avail
+          //   VTL_idx_occupied_Vreg_d[spatz_req.vd] = 1'b1;  // TODO: this reg also need to be rest when VTL cfg
+          // end else 
+          if (VTLVreg_q[spatz_req.op_vtl.old_vd] && vtl_en_q) begin 
             // VTL extension is enabled, the target vreg is mapped to VTL
             spatz_req.vl = (VTL_cfg_q.sp_cfg_ratio == SP_RATIO_025) ? vl_q << 2 : 
                            (VTL_cfg_q.sp_cfg_ratio == SP_RATIO_050) ? vl_q << 1 : vl_q;
@@ -865,5 +870,15 @@ module spatz_controller
   // Send request off to execution units
   assign spatz_req_o       = spatz_req;
   assign spatz_req_valid_o = spatz_req_valid;
+
+  // always_ff @(posedge clk_i) begin
+  //   if ($time > 6900 && $time < 7000) begin                                                                                                                                                              
+  //     $display("[%0t] sb_en_o[VSLDU_VS2_RD]=%b sb_en_o[VFU_VS1_RD]=%b sb_en_o[VFU_VD_RD]=%b sb_en_o[VFU_VD_WD]=%b  vlsu_rsp_v=%b vlsu_rsp_id=%0d  vfu_rsp_v=%b  spatz_req_valid=%b spatz_req.id=%0d 
+  // spatz_req.op=%0d",                                                                                                                                                                                               
+  //              $time, sb_enable_o[SB_VSLDU_VS2_RD], sb_enable_o[SB_VFU_VS1_RD], sb_enable_o[SB_VFU_VD_RD], sb_enable_o[SB_VFU_VD_WD],                                                                              
+  //              vlsu_rsp_valid_i, vlsu_rsp_i.id, vfu_rsp_valid_i,                                                                                                                                                   
+  //              spatz_req_valid, spatz_req.id, spatz_req.op);                                                                                                                                                       
+  //   end                                                                                                                                                                                                            
+  // end  
 
 endmodule : spatz_controller

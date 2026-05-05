@@ -1257,6 +1257,41 @@ module spatz_decoder
           end
         end
 
+        riscv_instr::VFXMACC_VRF: begin                                                                                                                                                                                  
+          automatic vreg_t       vd_field  = decoder_req_i.instr[11:7];
+          automatic logic [4:0]  rs1_field = decoder_req_i.instr[19:15];   // FP scalar reg id                                                                                                                           
+          automatic vreg_t       vs2_field = decoder_req_i.instr[24:20];   // weight vreg                                                                                                                                
+          automatic vreg_t       vs1_field = decoder_req_i.instr[31:27];   // index vreg                                                                                                                                 
+          automatic logic [1:0]  funct2    = decoder_req_i.instr[26:25];                                                                                                                                                 
+                                                                                                                                                                                                                         
+          // Only fp32 for now; reserve other funct2 codes                                                                                                                                                               
+          if (funct2 != 2'b00) illegal_instr = 1'b1;                                                                                                                                                                     
+                                                                                                                                                                                                                         
+          spatz_req.op         = VFMADD;
+          spatz_req.ex_unit    = VFU;                                                                                                                                                                                    
+          // spatz_req.vtype.vsew = EW_32;                                                                                                                                                                                  
+          spatz_req.rm         = fpu_rnd_mode_i;
+          spatz_req.fm         = fpu_fmt_mode_i;                                                                                                                                                                         
+                                                                                                                                                                                                                         
+          // Accumulator (vd is also a source for FMA)                                                                                                                                                                   
+          spatz_req.vd         = vd_field;                                                                                                                                                                               
+          spatz_req.use_vd     = 1'b1;                                                                                                                                                                                   
+          spatz_req.vd_is_src  = 1'b1;
+                                                                                                                                                                                                                         
+          // Weight goes through the VFU's vs1 path (mirrors VFXMACC_VF wiring)                                                                                                                                          
+          spatz_req.vs1        = vs2_field;                                                                                                                                                                              
+          spatz_req.use_vs1    = 1'b1;                                                                                                                                                                                   
+                                                                                                                                                                                                                         
+          // FP scalar register id (e.g., ft0) — VFU reads the value via the FRF                                                                                                                                         
+          spatz_req.rs2        = decoder_req_i.rs1;                                                                                                                                                                          
+                                                                                                                                                                                                                         
+          // VTL plumbing
+          spatz_req.op_vtl.use_vtl    = 1'b1;
+          spatz_req.op_vtl.gather_vd  = 1'b1;                                                                                                                                                                            
+          spatz_req.op_vtl.scatter_vd = 1'b1;
+          spatz_req.op_vtl.idx_vreg   = vs1_field;   // explicit index vreg                                                                                                                                              
+        end  
+
         // Move to the scalar FP RF
         riscv_instr::VFMV_F_S: begin
           if (spatz_pkg::FPU) begin

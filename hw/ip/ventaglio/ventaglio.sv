@@ -26,7 +26,7 @@ module ventaglio
     input  logic             spatz_req_valid_i,
     output logic             spatz_req_ready_o,
     input  logic             spatz_vfu_req_ready_i,
-    input  logic             vtl_index_preload_valid_i,
+    // input  logic             vtl_index_preload_valid_i,
     // VTL response
     output logic             vtl_rsp_valid_o,
     output vsldu_rsp_t       vtl_rsp_o,
@@ -135,27 +135,33 @@ module ventaglio
   vrf_addr_t vreg_idx_counter_q;
   `FF(vreg_idx_counter_q, vreg_idx_counter_d, '0)
 
-  logic index_requested;
-  `FF(index_requested, vrf_re_o, '0)
+  // logic index_requested;
+  // `FF(index_requested, vrf_re_o, '0)
 
   logic index_valid_d, index_valid_q;
   `FF(index_valid_q, index_valid_d, '0)
 
   // naive index valid logic handling
-  always_comb begin : proc_index_valid
-    index_valid_d = index_valid_q;
-    if (spatz_vfu_req_ready_i) begin 
-      // INVALID when VFU has a new req to process 
-      index_valid_d = 1'b0;
-    end
-    if (index_requested) begin 
-      // A new index is coming
-      index_valid_d = 1'b1;
-    end
-    if (vrf_rvalid_i) begin 
-      // VALID when a new index is available from read
-      index_valid_d = 1'b1;
-    end 
+  // always_comb begin : proc_index_valid
+  //   index_valid_d = index_valid_q;
+  //   if (spatz_vfu_req_ready_i) begin 
+  //     // INVALID when VFU has a new req to process 
+  //     index_valid_d = 1'b0;
+  //   end
+  //   if (index_requested) begin 
+  //     // A new index is coming
+  //     index_valid_d = 1'b1;
+  //   end
+  //   if (vrf_rvalid_i) begin 
+  //     // VALID when a new index is available from read
+  //     index_valid_d = 1'b1;
+  //   end 
+  // end 
+
+  always_comb begin : proc_index_valid                                                                                                                                                                           
+    index_valid_d = index_valid_q;    
+    if (spatz_vfu_req_ready_i) index_valid_d = 1'b0;  // refetch for next op                                                                                                                                     
+    if (vrf_rvalid_i)          index_valid_d = 1'b1;  // got the index      
   end 
 
   always_comb begin : proc_idx_counter
@@ -183,48 +189,32 @@ module ventaglio
 
   // We need a buffer here to track the next op 
   logic last_op_beat;
-  logic next_is_sparse_op;
-  vreg_t vidx, next_vidx_d, next_vidx_q;
-  logic  next_valid_d, next_valid_q;
+  // logic next_is_sparse_op;
+  vreg_t vidx;
+  // vreg_t next_vidx_d, next_vidx_q;
+  // logic  next_valid_d, next_valid_q;
 
-  assign next_is_sparse_op = spatz_req_i.ex_unit == VFU && spatz_req_i.op_vtl.use_vtl;
+  // assign next_is_sparse_op = spatz_req_i.ex_unit == VFU && spatz_req_i.op_vtl.use_vtl;
 
-  `FF(next_valid_q, next_valid_d, '0)
-  `FF(next_vidx_q,  next_vidx_d, '0)
+  // `FF(next_valid_q, next_valid_d, '0)
+  // `FF(next_vidx_q,  next_vidx_d, '0)
 
-  always_comb begin
-    next_valid_d = next_valid_q;
-    next_vidx_d  = next_vidx_q;
-    if (spatz_req_valid && next_is_sparse_op && next_valid_q == 0) begin 
-      next_valid_d = spatz_req_valid_i;
-      next_vidx_d  = spatz_req_i.vs1;
-    end 
-    if (vrf_re_o) begin
-      next_valid_d = '0;
-      next_vidx_d  = '0;
-    end
-  end
+  // always_comb begin
+  //   next_valid_d = next_valid_q;
+  //   next_vidx_d  = next_vidx_q;
+  //   if (spatz_req_valid && next_is_sparse_op && next_valid_q == 0) begin 
+  //     next_valid_d = spatz_req_valid_i;
+  //     next_vidx_d  = spatz_req_i.op_vtl.idx_vreg; 
+  //   end 
+  //   if (vrf_re_o) begin
+  //     next_valid_d = '0;
+  //     next_vidx_d  = '0;
+  //   end
+  // end
 
   always_comb begin : proc_idx_addr_gen
-    // vidx_d     = vidx_q;
-    // vidx_buf_d = vidx_buf_q;
-
-    // A new VLX instruction received
-    // if (spatz_req_valid_i && spatz_req_i.op_vtl.is_load_idx) begin
-    //   // No on-fly index req --> update vidx, else keep the old req
-    //   vidx_d     = (vrf_re_o) ? vidx_q : spatz_req_i.op_vtl.old_vd;
-    //   // buffer the vidx info
-    //   vidx_buf_d = spatz_req_i.op_vtl.old_vd;
-    // end
-
-    // Previous index req is done, and the buffered vidx is not the same as the previous vidx
-    // if (!vrf_re_o && vidx_q != vidx_buf_q) begin 
-    //   // update vidx
-    //   vidx_d = vidx_buf_q;
-    // end 
-
-    // vidx = (spatz_req_valid) ? ( (next_valid_d && !next_valid_q && last_op_beat) ? next_vidx_d : next_vidx_q) : spatz_req_i.vs1;
-    vidx = (spatz_req_valid) ? ( (next_is_sparse_op && !next_valid_q && spatz_req_valid_i) ? spatz_req_i.vs1 : next_vidx_q) : spatz_req_i.vs1;
+    vidx        = spatz_req.op_vtl.idx_vreg;
+    // vidx = (spatz_req_valid) ? ( (next_is_sparse_op && !next_valid_q && spatz_req_valid_i) ? spatz_req_i.op_vtl.idx_vreg : next_vidx_q) : spatz_req_i.op_vtl.idx_vreg;
 
     // address generation
     vrf_raddr_o     = {vidx, $clog2(NrWordsPerVector)'(1'b0)} + vreg_idx_counter_q;
@@ -272,6 +262,7 @@ module ventaglio
   // 1. When no gather/scatter is operating, and controller informed the index is ready
   // 2. TODO: When the current indices is depleted
 
+  /*
   logic index_preload_valid_d, index_preload_valid_q;
   `FF(index_preload_valid_q, index_preload_valid_d, '0)
 
@@ -310,6 +301,9 @@ module ventaglio
   end 
 
   assign vrf_re_o      = index_preload | index_load;
+  */
+
+  assign vrf_re_o = spatz_req_valid && !index_valid_q;
   // This is not required, sudo ID used
   // In controller, we do not check the dependency issued from VTL
   assign vrf_id_o[0]     = spatz_req.id;
@@ -618,6 +612,15 @@ module ventaglio
   assign vrf_waddr_o = '0;
   assign vrf_wdata_o = '0;
 
-
+  // always_ff @(posedge clk_i) begin
+  //   if ($time > 6900 && $time < 7000) begin                                                                                                                                                              
+  //     $display("[%0t] spatz_req_valid=%b idx_vreg=%0d  vrf_re_o=%b vrf_raddr=0x%0h vrf_rvalid_i=%b vrf_rdata=0x%0h  index_valid_q=%b  vfu_rdy=%b  vfu_rsp=%b vlsu_rsp_q=%b is_g=%b is_s=%b",                       
+  //              $time, spatz_req_valid, spatz_req.op_vtl.idx_vreg,                                                                                                                                                  
+  //              vrf_re_o, vrf_raddr_o, vrf_rvalid_i, vrf_rdata_i,                                                                                                                                                   
+  //              index_valid_q, spatz_vfu_req_ready_i,                                                                                                                                                               
+  //              vfu_rsp_valid_i, |running_q,                                                                                                                                                                        
+  //              is_gather, is_scatter);                                                                                                                                                                             
+  //   end                                                                                                                                                                                                            
+  // end  
 
 endmodule : ventaglio
