@@ -1317,13 +1317,37 @@ module spatz_decoder
           // FP scalar value (substituted upstream by FPU sequencer via use_fs1)                                                                                                                                         
           spatz_req.rs2       = decoder_req_i.rs1;
                                                                                                                                                                                                                          
-          // VTL plumbing — scatter only (no gather of old vd since vd is write-only)                                                                                                                                    
+          // VTL plumbing — scatter only (no gather of old vd since vd is write-only).
+          // vd is NOT zeroed by this instruction; the kernel must issue
+          // `vventclr` once per outer iteration to clear the ventaglio bank.
           spatz_req.op_vtl.use_vtl    = 1'b1;
           spatz_req.op_vtl.scatter_vd = 1'b1;
-          spatz_req.op_vtl.init_vd_to_zero = 1'b1;
           // op_vtl.gather_vd intentionally NOT set
           spatz_req.op_vtl.idx_vreg   = vs1_field;
-        end  
+        end
+
+        // vventclr — zero the entire ventaglio bank. Issued once per outer
+        // (or middle) loop iteration to clear residue from the previous
+        // accumulator group. Standalone op: no vd/vs operands; ventaglio
+        // walks every bank cell and writes 0. Routed via ex_unit=SLD so it
+        // bypasses the VFU and retires through the (formerly-dead) vsldu_rsp
+        // wires that ventaglio now drives via vtl_rsp_o.
+        riscv_instr::VVENTCLR: begin
+          automatic logic [1:0] funct2 = decoder_req_i.instr[26:25];
+
+          if (funct2 != 2'b11) illegal_instr = 1'b1;
+
+          spatz_req.ex_unit         = SLD;
+          // No operands. Disable all vd/vs use so the controller's scoreboard
+          // doesn't introduce false RAW deps.
+          spatz_req.use_vd          = 1'b0;
+          spatz_req.use_vs1         = 1'b0;
+          spatz_req.use_vs2         = 1'b0;
+
+          // VTL plumbing
+          spatz_req.op_vtl.use_vtl       = 1'b1;
+          spatz_req.op_vtl.clear_buffer  = 1'b1;
+        end
 
         // Move to the scalar FP RF
         riscv_instr::VFMV_F_S: begin

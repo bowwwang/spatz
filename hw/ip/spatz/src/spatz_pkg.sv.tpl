@@ -235,7 +235,7 @@ package spatz_pkg;
     logic gather_vd;
 
     logic scatter_vd;
-    logic init_vd_to_zero;
+    logic clear_buffer; // vventclr: zero the entire ventaglio bank
 
     vreg_t old_vd;
     vreg_t idx_vreg; // index vreg for vfxmacc.vrf

@@ -398,12 +398,17 @@ module spatz import spatz_pkg::*; import rvv_pkg::*; import fpnew_pkg::*; #(
     // Request
     .spatz_req_i          (spatz_req                                      ),
     .spatz_req_valid_i    (spatz_req_valid                                ),
-    .spatz_req_ready_o    (/* Not unsed for now*/                         ),
+    // Drive the (formerly-VSLDU) SLD ready signal from ventaglio's spill
+    // so the controller stalls SLD-routed VTL ops (vventclr) when the
+    // spill is busy. VFU-routed VTL ops also need this — see vsldu_stall
+    // change in spatz_controller.sv.
+    .spatz_req_ready_o    (vsldu_req_ready                                ),
     // req_ready signal from VFU
     .spatz_vfu_req_ready_i(vfu_vtl_req_ready                              ),
-    // Response
-    .vtl_rsp_valid_o  (/* Not unsed for now*/                         ),
-    .vtl_rsp_o        (/* Not unsed for now*/                         ),
+    // Response — routes through the (formerly-VSLDU) SLD retirement path.
+    // Only fires for vventclr; vfxmacc/vfxmul retire via vfu_rsp.
+    .vtl_rsp_valid_o  (vsldu_rsp_valid                                ),
+    .vtl_rsp_o        (vsldu_rsp                                      ),
     // from VFU
     .vfu_rsp_valid_i  (vfu_rsp_valid    ),
     .vfu_rsp_i        (vfu_rsp          ),
@@ -435,10 +440,8 @@ module spatz import spatz_pkg::*; import rvv_pkg::*; import fpnew_pkg::*; #(
     .vrf_id_o         ({sb_id[SB_VSLDU_VD_WD], sb_id[SB_VSLDU_VS2_RD]})
   );
 
-  // currently remove VSLDU for VTL, all VSLDU related instructions can not be executed
-  assign vsldu_req_ready = 1'b0; // SLDU is not ready, so that no instruction to SLDU can be dispatched
-  assign vsldu_rsp_valid = 1'b0;
-  assign vsldu_rsp       =  'b0;
+  // VSLDU is removed; the (vsldu_req_ready, vsldu_rsp_*) wires are now
+  // driven by ventaglio for the SLD-routed vventclr instruction.
 
 
 

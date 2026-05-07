@@ -523,7 +523,11 @@ module spatz_controller
   assign stall       = (vfu_stall | vlsu_stall | vsldu_stall) & req_buffer_valid;
   assign vfu_stall   = ~vfu_req_ready_i & (spatz_req.ex_unit == VFU);
   assign vlsu_stall  = ~vlsu_req_ready_i & (spatz_req.ex_unit == LSU);
-  assign vsldu_stall = ~vsldu_req_ready_i & (spatz_req.ex_unit == SLD);
+  // vsldu_req_ready_i is now driven by ventaglio's spill ready (vsldu is
+  // dead). Stall on it for SLD-routed ops AND for any VTL op (which also
+  // needs ventaglio's spill), so vfxmacc/vfxmul wait for vventclr to drain.
+  assign vsldu_stall = ~vsldu_req_ready_i & (spatz_req.ex_unit == SLD ||
+                                              spatz_req.op_vtl.use_vtl);
 
   // Running instructions
   logic      [NrParallelInstructions-1:0] running_insn_d, running_insn_q;
