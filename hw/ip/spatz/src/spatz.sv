@@ -196,7 +196,11 @@ module spatz import spatz_pkg::*; import rvv_pkg::*; import fpnew_pkg::*; #(
   logic      [NrReadPorts-1:0]  vrf_re;
   vrf_data_t [NrReadPorts-1:0]  vrf_rdata;
   logic      [NrReadPorts-1:0]  vrf_rvalid;
-  logic      [NrReadPorts-1:0]  vrf_vtl_redirect_read; 
+  logic      [NrReadPorts-1:0]  vrf_vtl_redirect_read;
+
+  // Per-vreg "writer in flight" — sourced from controller, consumed by Ventaglio
+  // for prefetch gating. Combinational from controller's write_table_q.valid.
+  logic      [NRVREG-1:0]       vreg_write_pending;
 
   // VTL-VRF forwarding path
   vrf_addr_t                    vrf_vtl_waddr;
@@ -305,7 +309,9 @@ module spatz import spatz_pkg::*; import rvv_pkg::*; import fpnew_pkg::*; #(
     .sb_enable_i      ({sb_we, sb_re}  ),
     .sb_enable_o      ({vrf_we, vrf_re}),
     .sb_vtl_redirect_read_o  (vrf_vtl_redirect_read ), // bowwang: leverage the new op_vtl field
-    .sb_vtl_redirect_write_o (vrf_vtl_redirect_write)
+    .sb_vtl_redirect_write_o (vrf_vtl_redirect_write),
+    // Per-vreg "writer in flight" feed to Ventaglio's prefetch trigger.
+    .vreg_write_pending_o    (vreg_write_pending)
   );
 
   /////////
@@ -437,7 +443,9 @@ module spatz import spatz_pkg::*; import rvv_pkg::*; import fpnew_pkg::*; #(
     .vrf_re_o         (sb_re[VSLDU_VS2_RD]                            ),
     .vrf_rdata_i      (vrf_rdata[VSLDU_VS2_RD]                        ),
     .vrf_rvalid_i     (vrf_rvalid[VSLDU_VS2_RD]                       ),
-    .vrf_id_o         ({sb_id[SB_VSLDU_VD_WD], sb_id[SB_VSLDU_VS2_RD]})
+    .vrf_id_o         ({sb_id[SB_VSLDU_VD_WD], sb_id[SB_VSLDU_VS2_RD]}),
+    // Per-vreg "writer in flight" feed from controller for prefetch gating
+    .vreg_write_pending_i (vreg_write_pending                         )
   );
 
   // VSLDU is removed; the (vsldu_req_ready, vsldu_rsp_*) wires are now

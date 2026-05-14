@@ -61,8 +61,12 @@ module spatz_controller
     input  logic             [NrWritePorts-1:0]                 sb_wrote_result_i,
     output logic             [NrVregfilePorts-1:0]              sb_enable_o,
     input  spatz_id_t        [NrVregfilePorts-1:0]              sb_id_i,
-    output logic             [NrVregfilePorts-NrWritePorts-1:0] sb_vtl_redirect_read_o, 
-    output logic             [NrWritePorts-1:0]                 sb_vtl_redirect_write_o  
+    output logic             [NrVregfilePorts-NrWritePorts-1:0] sb_vtl_redirect_read_o,
+    output logic             [NrWritePorts-1:0]                 sb_vtl_redirect_write_o,
+    // Per-vreg "writer in flight" — combinational from write_table_q.valid
+    // (which is cleared on retire). Exposed so the Ventaglio prefetch can
+    // safely fire as soon as the next op's index vreg has no pending write.
+    output logic             [NRVREG-1:0]                       vreg_write_pending_o
   );
 
 // Include FF
@@ -506,6 +510,15 @@ module spatz_controller
     // An instruction never depends on itself
     for (int insn = 0; insn < NrParallelInstructions; insn++)
       scoreboard_d[insn].deps[insn] = 1'b0;
+  end
+
+  // Per-vreg "writer in flight" export. write_table_q[v].valid is set when a
+  // new writer is issued (line ~494) and cleared on the writer's retire
+  // (lines ~381, ~396, ~410). Consumers (Ventaglio prefetch) read this
+  // combinationally to gate VRF reads safely without inferring 1-cycle
+  // stability delays from spatz_req_i.
+  for (genvar v = 0; v < NRVREG; v++) begin : gen_vreg_pending_export
+    assign vreg_write_pending_o[v] = write_table_q[v].valid;
   end
 
   /////////////

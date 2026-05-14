@@ -288,9 +288,28 @@ module spatz_vlsu
       .overflow_o(/* Unused */               )
     );
 
+    // The load optimization "finish on mem_operation_last" lets back-to-back
+    // loads overlap by 1 cycle (the next instr's first request can fire same
+    // cycle as the previous instr's last beat is internally accepted). Without
+    // it we get a bubble cycle (= the original-Spatz behavior). We keep the
+    // optimization but AND it with `mem_counter_en[port]` (= internal handshake
+    // firing this cycle) — so it only signals finished when the last beat is
+    // ACTUALLY being accepted now, not just "about to be" (where the spill
+    // register might be backpressuring).
+    //
+    // Bug fix (2026-05-08): the previous form
+    //   `(is_load & mem_operation_last) || (counter == max)`
+    // fired prematurely when the 2-deep spill register backpressured the last
+    // beat: counter stayed at max-ELENB, mem_operation_last kept firing,
+    // mem_spatz_req_ready triggered, mem_counter_load reset the counter for
+    // the next instruction, and the last beat was never internally accepted.
+    // Symptom: m=2 body `vle32 v4` lost port-1 beat-3 → ROB never pushed it →
+    // vrf write got stale FIFO slot-7 data (preload's w[k=1][26..27]).
     assign mem_port_finished_q[port] = mem_spatz_req_valid &&
-                                      ( (mem_spatz_req.op_mem.is_load & mem_operation_last[port]) ||
-                                        (mem_counter_q[port] == mem_counter_max[port]           )   );
+                                      ( (mem_spatz_req.op_mem.is_load
+                                         & mem_operation_last[port]
+                                         & mem_counter_en[port]) ||
+                                        (mem_counter_q[port] == mem_counter_max[port]) );
   end: gen_mem_counters
 
   // Did the current instruction finished the memory requests?

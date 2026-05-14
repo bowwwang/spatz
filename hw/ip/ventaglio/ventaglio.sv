@@ -57,7 +57,12 @@ module ventaglio
     output vrf_addr_t                       vrf_raddr_o,
     output logic                            vrf_re_o,
     input  vrf_data_t                       vrf_rdata_i,
-    input  logic                            vrf_rvalid_i
+    input  logic                            vrf_rvalid_i,
+
+    // Per-vreg "writer in flight" from controller. Combinational from
+    // write_table_q.valid (which is set on writer issue, cleared on retire).
+    // Used to gate the speculative prefetch of the next op's index vreg.
+    input  logic       [NRVREG-1:0]         vreg_write_pending_i
   );
 
 // Include FF
@@ -194,15 +199,12 @@ module ventaglio
   // any reload bubble. Eliminates the index-load stall between back-to-back
   // sparse ops (vfxmacc.vrf / vfxmul.vrf in SpMM kernels).
 
-  vrf_data_t  index_data_q       [0:1], index_data_d       [0:1];
-  logic       index_buf_valid_q  [0:1], index_buf_valid_d  [0:1];
-  spatz_id_t  index_buf_id_q     [0:1], index_buf_id_d     [0:1];
-  `FF(index_data_q[0],      index_data_d[0],      '0)
-  `FF(index_data_q[1],      index_data_d[1],      '0)
-  `FF(index_buf_valid_q[0], index_buf_valid_d[0], 1'b0)
-  `FF(index_buf_valid_q[1], index_buf_valid_d[1], 1'b0)
-  `FF(index_buf_id_q[0],    index_buf_id_d[0],    '0)
-  `FF(index_buf_id_q[1],    index_buf_id_d[1],    '0)
+  vrf_data_t [1:0] index_data_d,      index_data_q;
+  logic      [1:0] index_buf_valid_d, index_buf_valid_q;
+  spatz_id_t [1:0] index_buf_id_d,    index_buf_id_q;
+  `FF(index_data_q,      index_data_d,      '0)
+  `FF(index_buf_valid_q, index_buf_valid_d, '0)
+  `FF(index_buf_id_q,    index_buf_id_d,    '0)
 
   // Pointer: which slot the active spatz_req consumes from.
   logic active_buf_q, active_buf_d;
@@ -211,6 +213,11 @@ module ventaglio
   // Locked fetch state — once vrf_re_o is issued, latch the target slot/id/
   // vreg so a slow vrf response can't be misrouted if spatz_req_i changes
   // mid-flight (e.g. controller switches to a non-VTL op).
+  // Notes: 
+  // fetch_lock   - Set the cycle we issue vrf_re_o; held high until vrf_rvalid_i returns
+  // fetch_target - Snapshot of which slot the in-flight read is for
+  // fetch_id     - Snapshot of the id we're fetching for
+  // fetch_vidx   - Snapshot of the vreg address
   logic       fetch_lock_q,   fetch_lock_d;
   logic       fetch_target_q, fetch_target_d;
   spatz_id_t  fetch_id_q,     fetch_id_d;
@@ -220,12 +227,17 @@ module ventaglio
   `FF(fetch_id_q,     fetch_id_d,     '0)
   `FF(fetch_vidx_q,   fetch_vidx_d,   '0)
 
-  // ── Composed view (replaces single index_q / index_valid_q) ──
+  // ── Slot hit: registered active-slot match for the current op.
+  // Used as the "no fetch needed" signal by fetch_for_current AND as the
+  // valid indicator on index_q below. With the B1 prefetch enabled, slot_hit
+  // is the common case (the next op's index is already prefetched into the
+  // spare slot before it becomes current); on-demand fetch is the fallback.
+  logic slot_hit;
+  assign slot_hit = index_buf_valid_q[active_buf_q] &&
+                    (index_buf_id_q[active_buf_q] == spatz_req.id);
+
   vrf_data_t  index_q;
   logic       index_valid_q;
-  assign index_q       = index_data_q[active_buf_q];
-  assign index_valid_q = index_buf_valid_q[active_buf_q] &&
-                         (index_buf_id_q[active_buf_q] == spatz_req.id);
 
   // ── Next-op peek ──
   // Spill must be full (current op latched) AND controller must be offering
@@ -250,19 +262,16 @@ module ventaglio
                               index_buf_id_q[spare_buf] == next_id) ||
                              (fetch_lock_q && fetch_id_q == next_id));
 
-  // ── Fetch decision: only on-demand for the current op.
-  //
-  // The speculative prefetch into the spare slot was disabled because the
-  // controller's scoreboard does NOT track `op_vtl.idx_vreg` as a read
-  // dependency (it's not in vs1/vs2/vd). When the prefetch fires for the
-  // next op, it can read the index vreg BEFORE the kernel's vlx32.v has
-  // updated it, latching stale data into the spare slot. The next op then
-  // gathers/scatters at the wrong lanes. The race was masked previously by
-  // the init-zero FSM's ~4-cycle latency; with vventclr-based init that
-  // gap closed and the race surfaced.
-  //
-  // Keeping the two-slot buffer infrastructure for now (the spare slot is
-  // simply never written), so the existing slot/lock plumbing still works.
+  // ── Fetch decision ──
+  // fetch_for_current : on-demand fetch when the current op's slot isn't
+  //                     filled. Fallback for the very first op of a stream
+  //                     or any case where prefetch couldn't fire in time.
+  // fetch_for_next    : speculative prefetch for the next op visible on
+  //                     spatz_req_i. Gated by `vreg_write_pending_i` so the
+  //                     fetch only fires once the controller confirms the
+  //                     index vreg has no in-flight writer. This eliminates
+  //                     the 1-cycle bubble in `index_valid_q` (and hence
+  //                     `rvalid_o`) at op transitions.
   logic       fetch_for_current;
   logic       fetch_for_next;
   logic       target_slot_sel;
@@ -278,15 +287,31 @@ module ventaglio
   logic spatz_req_is_clear;
   assign spatz_req_is_clear = spatz_req_valid && spatz_req.op_vtl.clear_buffer;
 
-  assign fetch_for_current = spatz_req_valid && !index_valid_q
+  assign fetch_for_current = spatz_req_valid && !slot_hit
                              && !spatz_req_is_clear
                              && !(fetch_lock_q && fetch_id_q == spatz_req.id);
-  assign fetch_for_next    = 1'b0;  // prefetch disabled — see comment above
 
+  assign fetch_for_next    = next_op_visible
+                          && !spare_holds_next
+                          && !vreg_write_pending_i[next_idx_vreg];
+
+  // Priority: current beats next (current is the in-flight op consuming the
+  // index buffer right now; next can wait one more cycle if we're already
+  // fetching for current).
   always_comb begin : proc_fetch_sel
-    target_slot_sel = active_buf_q;
-    fetch_id_sel    = spatz_req.id;
-    fetch_vidx_sel  = spatz_req.op_vtl.idx_vreg;
+    if (fetch_for_current) begin
+      target_slot_sel = active_buf_q;
+      fetch_id_sel    = spatz_req.id;
+      fetch_vidx_sel  = spatz_req.op_vtl.idx_vreg;
+    end else if (fetch_for_next) begin
+      target_slot_sel = spare_buf;
+      fetch_id_sel    = next_id;
+      fetch_vidx_sel  = next_idx_vreg;
+    end else begin
+      target_slot_sel = active_buf_q;
+      fetch_id_sel    = spatz_req.id;
+      fetch_vidx_sel  = spatz_req.op_vtl.idx_vreg;
+    end
   end
 
   // Effective fetch state — locked overrides fresh once a fetch is in flight.
@@ -307,6 +332,16 @@ module ventaglio
       eff_vidx   = fetch_vidx_sel;
     end
   end
+
+  // ── Index read for the current op ──
+  // Always sourced from the registered slot — short combinational path
+  // (slot FF → MUX → scatter/gather datapath input). The prefetch
+  // (`fetch_for_next`) keeps the spare slot pre-filled, so `slot_hit` is
+  // the common case at op transitions. On-demand fetch (`fetch_for_current`)
+  // covers the rare first-op-of-a-stream case at the cost of a 1-cycle
+  // bubble.
+  assign index_q       = index_data_q[active_buf_q];
+  assign index_valid_q = slot_hit;
 
   // Vector register file counter signals (gather multi-beat).
   logic      vreg_idx_counter_en;
@@ -457,7 +492,7 @@ module ventaglio
 
   // `rgather_en_i` and `wscatter_en_i` signals are attached in VRF bypass logic
   always_comb begin
-    is_gather  = (spatz_req.op_vtl.gather_vd || spatz_req.op_vtl.gather_vs1 || spatz_req.op_vtl.gather_vs2) && rgather_en_i;
+    is_gather  = spatz_req.op_vtl.gather_vd && rgather_en_i;
     is_scatter = spatz_req.op_vtl.scatter_vd && wscatter_en_i;
   end
 
@@ -716,95 +751,5 @@ module ventaglio
   assign vrf_wbe_o   = '0;
   assign vrf_waddr_o = '0;
   assign vrf_wdata_o = '0;
-
-  /******************************/
-  /*       Debug Logger         */
-  /******************************/
-  // Focused trace of vfxmul/vfxmacc lifecycle for v16/v18 family. Only logs
-  // events that help diagnose init-zero / index-buffer correctness; should
-  // produce a few hundred lines for a single SpMM run. Synthesis ignores
-  // all of `synthesis translate_off` / `_on`.
-  // synthesis translate_off
-  int dbg_fd;
-  initial dbg_fd = $fopen("logs/ventaglio_debug.log", "w");
-
-  // Cycle counter for human-readable timestamps
-  longint dbg_cyc;
-  always_ff @(posedge clk_i or negedge rst_ni) begin
-    if (!rst_ni) dbg_cyc <= '0;
-    else         dbg_cyc <= dbg_cyc + 1;
-  end
-
-  // Convenience: only log scatter writes targeted at v16..v19 (the SpMM
-  // accumulators). vd_row_start covers spatz_req.vd, but for filtering
-  // scatter writes we use the vd field directly.
-  function automatic logic dbg_vd_of_interest(vreg_t v);
-    return (v >= 16) && (v <= 19);
-  endfunction
-
-  always_ff @(posedge clk_i) begin
-    if (rst_ni && dbg_fd != 0) begin
-      // 1) New op latched into ventaglio's spill
-      if (new_vtl_request_d) begin
-        $fdisplay(dbg_fd,
-          "[%0d] OP_LATCH id=%0d vd=v%0d idx_vreg=v%0d vlmul=%0d sp_ratio=%0d scatter=%0b clear=%0b",
-          dbg_cyc, spatz_req.id, spatz_req.vd, spatz_req.op_vtl.idx_vreg,
-          spatz_req.vtype.vlmul,
-          spatz_req.op_vtl.sp_cfg.sp_cfg_ratio, spatz_req.op_vtl.scatter_vd,
-          spatz_req.op_vtl.clear_buffer);
-      end
-
-      // 1b) Clear sequencer activity
-      if (clear_active_d && !clear_active_q) begin
-        $fdisplay(dbg_fd, "[%0d] CLEAR_START id=%0d (rows=%0d)",
-                  dbg_cyc, clear_id_d, VTGNrWordsPerChannel);
-      end
-      if (clear_done) begin
-        $fdisplay(dbg_fd, "[%0d] CLEAR_DONE id=%0d (vtl_rsp asserted)",
-                  dbg_cyc, clear_id_q);
-      end
-
-      // 2) VFU response
-      if (vfu_rsp_valid_i) begin
-        $fdisplay(dbg_fd,
-          "[%0d] VFU_RSP rsp.id=%0d spatz_req.id=%0d (match=%0b)",
-          dbg_cyc, vfu_rsp_i.id, spatz_req.id,
-          (vfu_rsp_i.id == spatz_req.id));
-      end
-
-      // 3) VFU input handshake (op transition)
-      if (spatz_vfu_req_ready_i && spatz_req_valid) begin
-        $fdisplay(dbg_fd,
-          "[%0d] VFU_INPUT_READY (current spatz_req.id=%0d vd=v%0d)",
-          dbg_cyc, spatz_req.id, spatz_req.vd);
-      end
-
-      // 4) Active-buffer pointer flip
-      if (active_buf_d != active_buf_q) begin
-        $fdisplay(dbg_fd,
-          "[%0d] BUF_FLIP %0d -> %0d", dbg_cyc, active_buf_q, active_buf_d);
-      end
-
-      // 5) Index buffer slot write
-      if (vrf_rvalid_i && eff_fetch) begin
-        $fdisplay(dbg_fd,
-          "[%0d] BUF_WRITE slot=%0d id=%0d data_lo=%h",
-          dbg_cyc, eff_target, eff_id, vrf_rdata_i[31:0]);
-      end
-
-      // 6) Scatter writes targeted at v16..v19
-      if (is_scatter && dbg_vd_of_interest(spatz_req.vd)) begin
-        for (int b_ch = 0; b_ch < VTGNrChannels; b_ch++) begin
-          if (we[b_ch]) begin
-            $fdisplay(dbg_fd,
-              "[%0d] SCATTER vd=v%0d id=%0d b_ch=%0d row=%0d wbe=%h data_lo=%h accepted=%0b",
-              dbg_cyc, spatz_req.vd, spatz_req.id, b_ch,
-              waddr[b_ch], wbe[b_ch], wdata[b_ch][31:0], wvalid_o[VRF_WD]);
-          end
-        end
-      end
-    end
-  end
-  // synthesis translate_on
 
 endmodule : ventaglio
