@@ -159,6 +159,8 @@ module spatz_decoder
               spatz_req.op             = VLSE;
               spatz_req.op_mem.is_load = 1'b1;
               spatz_req.vd             = ls_vd;
+              // Controller's LSU dispatch overwrites vd from old_vd; mirror.
+              spatz_req.op_vtl.old_vd  = ls_vd;
               spatz_req.use_vd         = 1'b1;
               spatz_req.rs1            = decoder_req_i.rs1;
               spatz_req.rs2            = decoder_req_i.rs2;
@@ -175,6 +177,10 @@ module spatz_decoder
               spatz_req.op             = VLXE;
               spatz_req.op_mem.is_load = 1'b1;
               spatz_req.vd             = ls_vd;
+              // Controller's LSU dispatch (spatz_controller.sv:601) does
+              // `spatz_req.vd = spatz_req.op_vtl.old_vd`, so old_vd must
+              // carry the real vd or vd gets clobbered to 0.
+              spatz_req.op_vtl.old_vd  = ls_vd;
               spatz_req.use_vd         = 1'b1;
               spatz_req.rs1            = decoder_req_i.rs1;
               spatz_req.vs2            = ls_s2;
@@ -206,6 +212,8 @@ module spatz_decoder
               spatz_req.op             = VSSE;
               spatz_req.op_mem.is_load = 1'b0;
               spatz_req.vd             = ls_vd;
+              // Controller's LSU dispatch overwrites vd from old_vd; mirror.
+              spatz_req.op_vtl.old_vd  = ls_vd;
               spatz_req.use_vd         = 1'b1;
               spatz_req.vd_is_src      = 1'b1;
               spatz_req.rs1            = decoder_req_i.rs1;
@@ -223,6 +231,10 @@ module spatz_decoder
               spatz_req.op             = VSXE;
               spatz_req.op_mem.is_load = 1'b0;
               spatz_req.vd             = ls_vd;
+              // Controller's LSU dispatch (spatz_controller.sv:601) does
+              // `spatz_req.vd = spatz_req.op_vtl.old_vd`, so old_vd must
+              // carry the real vd or vd gets clobbered to 0.
+              spatz_req.op_vtl.old_vd  = ls_vd;
               spatz_req.use_vd         = 1'b1;
               spatz_req.vd_is_src      = 1'b1;
               spatz_req.rs1            = decoder_req_i.rs1;

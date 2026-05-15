@@ -1,0 +1,19 @@
+// Copyright 2025 ETH Zurich and University of Bologna.
+// Licensed under the Apache License, Version 2.0, see LICENSE for details.
+// SPDX-License-Identifier: Apache-2.0
+
+// Parameters for f32_SpMV-baseline:
+//   res[P]   =  W[N x P]^T * a[N]    (W is n:m structured sparse)
+//
+//   format : "1_to_4" or "2_to_4"   (n:m pattern)
+//   N      : reduction dim
+//   P_W    : compact column count per sparse row
+//   seed   : RNG seed for activation / weight / index draws
+
+{
+    kernel: "SpMV"
+    format: "1_to_4",
+    N: 16,
+    P_W: 256,
+    seed: 1
+}

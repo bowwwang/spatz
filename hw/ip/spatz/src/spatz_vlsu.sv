@@ -35,6 +35,16 @@ module spatz_vlsu
     output logic                            vrf_we_o,
     output vrf_be_t                         vrf_wbe_o,
     input  logic                            vrf_wvalid_i,
+    // High in cycles where the current VRF write completes a full VRF word.
+    // For unit-stride loads (full-byte wbe) this is every cycle vrf_we_o is high.
+    // For indexed / strided / unaligned single-element loads, where each VRF
+    // word is split into two half-word writes (even-lane wbe then odd-lane
+    // wbe), this is high only on the SECOND cycle — when the prior cycle's
+    // even-lane data and this cycle's odd-lane data together make the word
+    // fully visible in VRF. Used by the scoreboard to gate chaining so the
+    // consumer reads each word AFTER both halves are committed. See
+    // `project_vluxei_vfmacc_raw_hazard`.
+    output logic                            vlsu_word_complete_o,
     output spatz_id_t      [2:0]            vrf_id_o,
     output vrf_addr_t      [1:0]            vrf_raddr_o,
     output logic           [1:0]            vrf_re_o,
@@ -253,6 +263,38 @@ module spatz_vlsu
   vlen_t [NrMemPorts-1:0] mem_counter_q;
   logic  [NrMemPorts-1:0] mem_port_finished_q;
 
+  // Is the next op (visible at the controller boundary) a load whose
+  // routing is COMPATIBLE with the current one? Used to gate the
+  // `mem_operation_last & mem_counter_en` optimization in
+  // `mem_port_finished_q` below. See memory `project_vlsu_load_transition_bug`
+  // for the full story: when the spill register holds the current op's
+  // in-flight last beat and `mem_spatz_req` advances to a load with
+  // DIFFERENT routing (e.g. unit-stride → indexed VLE→VLXE), the leaked
+  // beat fires externally under the NEW op's identity and pollutes the
+  // next op's offset_queue / commit FIFO routing. For routing-compatible
+  // transitions the leak is harmless because every downstream signal
+  // does the same thing for either op, so we keep the tight no-bubble
+  // pipelining.
+  //
+  // Routing-compatible groups today:
+  //   - Unit-stride loads: {VLE, VLX} — same addressing path, same
+  //     full-byte wbe; VLX only differs by `op_vtl.is_load_idx` which is
+  //     captured per-instruction in the commit FIFO entry, not on the
+  //     live mem_spatz_req. SpMV's VLX → VLE sequence falls in here.
+  //   - Strided loads:    {VLSE}      (just self-pair for now).
+  //   - Indexed loads:    {VLXE}      (just self-pair).
+  // Extend the inside-clauses below if more routing-compatible pairs are
+  // identified.
+  logic next_op_same_type_load;
+  always_comb begin
+    automatic logic same_op   = spatz_req_i.op == mem_spatz_req.op;
+    automatic logic ustr_pair = (mem_spatz_req.op == VLE && spatz_req_i.op == VLX)
+                             || (mem_spatz_req.op == VLX && spatz_req_i.op == VLE);
+    next_op_same_type_load = spatz_req_valid_i
+                          && (spatz_req_i.ex_unit == LSU)
+                          && (same_op || ustr_pair);
+  end
+
   vlen_t [NrMemPorts-1:0] mem_idx_counter_delta;
   vlen_t [NrMemPorts-1:0] mem_idx_counter_d;
   vlen_t [NrMemPorts-1:0] mem_idx_counter_q;
@@ -305,10 +347,24 @@ module spatz_vlsu
     // the next instruction, and the last beat was never internally accepted.
     // Symptom: m=2 body `vle32 v4` lost port-1 beat-3 → ROB never pushed it →
     // vrf write got stale FIFO slot-7 data (preload's w[k=1][26..27]).
+    //
+    // Bug fix (2026-05-15): even with the `mem_counter_en` anchor, the
+    // optimization is unsafe when the NEXT op admitted by the VLSU is a
+    // DIFFERENT-type load (e.g. VLE→VLXE): `mem_spatz_req` advances same
+    // cycle as the last beat is internally accepted, leaving the beat in
+    // the spill register where it later drains externally under the NEW
+    // op's identity, polluting the new op's offset_queue and rob accounting.
+    // We additionally gate the optimization on `next_op_same_type_load` so
+    // the spill leak only ever happens between routing-compatible loads
+    // (where it's harmless). For VLE→VLXE etc. we fall back to the safe
+    // `counter == max` clause (1-cycle bubble at the transition).
+    // See `project_vlsu_load_transition_bug` for the SpMV-baseline trace
+    // that found this.
     assign mem_port_finished_q[port] = mem_spatz_req_valid &&
                                       ( (mem_spatz_req.op_mem.is_load
                                          & mem_operation_last[port]
-                                         & mem_counter_en[port]) ||
+                                         & mem_counter_en[port]
+                                         & next_op_same_type_load) ||
                                         (mem_counter_q[port] == mem_counter_max[port]) );
   end: gen_mem_counters
 
@@ -657,6 +713,20 @@ module spatz_vlsu
   assign vrf_we_o        = vrf_req_valid_q;
   assign vrf_id_o        = {vrf_req_q.rsp.id, mem_spatz_req.id, commit_insn_q.id};
   assign vrf_req_ready_q = vrf_wvalid_i;
+
+  // Word-complete signal: the current VRF write writes the TOP byte of each
+  // port slot (bits 8*p + ELENB-1 of wbe, for p=0..N_FU-1). For a full-word
+  // unit-stride load that bit is always 1, so this fires every cycle vrf_we_o
+  // does. For split half-word loads (vluxei / vlse single-element ops), the
+  // top byte is only enabled on the SECOND of the two per-word writes (the
+  // upper-half wbe), so this fires on every odd-half cycle. Generalises to
+  // any single-element SEW: the highest-byte beat of each port is always the
+  // last one written for that VRF word.
+  logic [N_FU-1:0] port_word_complete;
+  for (genvar p = 0; p < N_FU; p++) begin : gen_port_word_complete
+    assign port_word_complete[p] = vrf_req_q.wbe[(p+1)*ELENB - 1];
+  end
+  assign vlsu_word_complete_o = vrf_we_o && (&port_word_complete);
 
   // Ack when the vector store finishes, or when the vector load commits to the VRF
   assign vlsu_rsp_o       = vrf_req_q.rsp_valid && vrf_req_valid_q ? vrf_req_q.rsp   : '{id: commit_insn_q.id, default: '0};
@@ -1062,5 +1132,177 @@ module spatz_vlsu
 
   if (NrMemPorts != 2**$clog2(NrMemPorts))
     $error("[spatz_vlsu] The NrMemPorts parameter needs to be a power of two");
+
+  // synthesis translate_off
+  // ---------------------------------------------------------------------------
+  // VLSU debug logger
+  //
+  // Restored per the spec in memory `reference_removed_loggers_2026-05-14`.
+  // Dumps per-cycle VLSU activity to `logs/vlsu_debug.log`, filtered to a
+  // window of interest. Captures the events needed to diagnose dropped beats,
+  // stalled loads, or mem<->commit divergence:
+  //
+  //   VRF_WR        — vrf_we_o fires; commit id, waddr, wbe, wdata, vrf_wvalid_i
+  //   ROB_PUSH[p]   — rob_push[p] fires; port + data
+  //   ROB_POP [p]   — rob_pop[p] fires;  port + data + rob_rvalid
+  //   MEM_REQ [p]   — external mem request accepted on port p
+  //   MEM_RSP [p]   — external mem response arrives on port p; wb_consumed
+  //                   tells whether the rob_push gate accepts it this cycle
+  //   COMMIT_NEXT   — commit_insn_pop fires; shows next commit_insn_d fields
+  //   VLSU_RSP      — vlsu_rsp_valid_o fires; shows retiring id
+  //   MEM_STATE     — mem_insn_pending_q / mem_insn_finished_q snapshot,
+  //                   printed only when the masks change vs the prior cycle
+  //
+  // To search: each line starts with `[VLSU <ps>]`. e.g.
+  //   grep "VLSU_RSP\|MEM_STATE" logs/vlsu_debug.log
+  // ---------------------------------------------------------------------------
+  // verilog_lint: waive-start always-ff-non-blocking
+  integer vlsu_log_fd;
+  initial begin
+    vlsu_log_fd = $fopen("logs/vlsu_debug.log", "w");
+    if (vlsu_log_fd == 0) begin
+      $display("[VLSU logger] failed to open logs/vlsu_debug.log");
+    end else begin
+      $fwrite(vlsu_log_fd, "# VLSU activity log. Each line: [VLSU <ps>] <event>\n");
+      $fwrite(vlsu_log_fd,
+              "# NrMemPorts=%0d  NrParallelInstructions=%0d  ELEN=%0d\n",
+              NrMemPorts, NrParallelInstructions, ELEN);
+    end
+  end
+
+  // Cluster `$time` is in ns (timeunit 1ns/1ps override).
+  // Default window targets the id=1 stall window seen in the scoreboard log:
+  // id=1 issued ~13661 ns, stops writing beats ~13683 ns, kernel deadlocked
+  // by ~13789 ns. Widen if needed.
+  localparam time VLSU_LOG_T_MIN = 3830;
+  localparam time VLSU_LOG_T_MAX = 4008;
+
+  // Track previous values for change-detection on MEM_STATE.
+  logic [NrParallelInstructions-1:0] vlsu_pending_prev;
+  logic [NrParallelInstructions-1:0] vlsu_finished_prev;
+  always_ff @(posedge clk_i or negedge rst_ni) begin
+    if (!rst_ni) begin
+      vlsu_pending_prev  <= '0;
+      vlsu_finished_prev <= '0;
+    end else begin
+      vlsu_pending_prev  <= mem_insn_pending_q;
+      vlsu_finished_prev <= mem_insn_finished_q;
+    end
+  end
+
+  always_ff @(posedge clk_i) begin
+    if (rst_ni && vlsu_log_fd != 0
+        && $time >= VLSU_LOG_T_MIN && $time <= VLSU_LOG_T_MAX) begin
+
+      // VRF_WR — the commit-side write to VRF. We print all 8 32-bit lanes
+      // of the 256-bit VRF word so we can read out the loaded byte_offsets
+      // for vle32.v v4 (and compare them against indexed-load MEM_REQ
+      // addresses below). `id` is taken from `vrf_req_q.rsp.id` (what the
+      // controller's scoreboard actually sees) rather than commit_insn_q.id,
+      // which can be 1 cycle ahead because commit_pop is allowed to fire
+      // before the in-flight write retires.
+      if (vrf_we_o) begin
+        $fwrite(vlsu_log_fd,
+                "[VLSU %0t] VRF_WR id=%0d (commit_q.id=%0d) waddr=0x%0h wbe=%b vrf_wvalid_i=%b wdata=[%08x %08x %08x %08x %08x %08x %08x %08x]\n",
+                $time, vrf_req_q.rsp.id, commit_insn_q.id,
+                vrf_waddr_o, vrf_wbe_o, vrf_wvalid_i,
+                vrf_wdata_o[ 7*32 +: 32],
+                vrf_wdata_o[ 6*32 +: 32],
+                vrf_wdata_o[ 5*32 +: 32],
+                vrf_wdata_o[ 4*32 +: 32],
+                vrf_wdata_o[ 3*32 +: 32],
+                vrf_wdata_o[ 2*32 +: 32],
+                vrf_wdata_o[ 1*32 +: 32],
+                vrf_wdata_o[ 0*32 +: 32]);
+      end
+
+      // ROB push/pop per port.
+      for (int p = 0; p < NrMemPorts; p++) begin
+        if (rob_push[p]) begin
+          $fwrite(vlsu_log_fd,
+                  "[VLSU %0t] ROB_PUSH port=%0d data=0x%016h\n",
+                  $time, p, rob_wdata[p]);
+        end
+        if (rob_pop[p]) begin
+          $fwrite(vlsu_log_fd,
+                  "[VLSU %0t] ROB_POP  port=%0d data=0x%016h rvalid=%b\n",
+                  $time, p, rob_rdata[p], rob_rvalid[p]);
+        end
+      end
+
+      // External memory request acceptance.
+      // For indexed STORES (op=57 VSXE), also dump the data/strb so we
+      // can see exactly which bytes are being written at the gather
+      // address. data is 64 bits (the port's 8-byte TCDM lane); for SEW=32
+      // single-element indexed stores, only 4 bytes are valid per beat,
+      // selected by `strb` (= 0x0F for lower-lane write, 0xF0 for upper-
+      // lane write of the 8-byte port slot).
+      // Note: `addr` is from the prior cycle's compute (spill register
+      // delay); `req_offset` and the port's `addr`/`strb`/`data` from the
+      // SAME compute are paired through the spill, so the externally
+      // visible request at cycle T has a consistent (addr, strb, data,
+      // req_offset_at_T-1).
+      for (int p = 0; p < NrMemPorts; p++) begin
+        if (spatz_mem_req_valid_o[p] && spatz_mem_req_ready_i[p]) begin
+          $fwrite(vlsu_log_fd,
+                  "[VLSU %0t] MEM_REQ  port=%0d wr=%b op=%0d addr=0x%08x strb=0x%02x data=0x%016h req_offset=%0d vreg_offset=%0d mem_req_id=%0d mem_counter_q=%0d mem_idx_counter_q=%0d mem_counter_max=%0d store_count_q=%0d\n",
+                  $time, p,
+                  spatz_mem_req_o[p].write, mem_spatz_req.op,
+                  spatz_mem_req_o[p].addr,
+                  spatz_mem_req_o[p].strb,
+                  spatz_mem_req_o[p].data,
+                  mem_req_addr_offset[p],
+                  vreg_addr_offset[p],
+                  mem_spatz_req.id,
+                  mem_counter_q[p], mem_idx_counter_q[p],
+                  mem_counter_max[p],
+                  store_count_q[p]);
+        end
+      end
+
+      // External memory response. wb_consumed = whether rob_push[p] fires
+      // this cycle — if 0 with mem_rsp_valid=1, the beat is being dropped
+      // (the exact failure mode of the prior mem_port_finished_q bug).
+      for (int p = 0; p < NrMemPorts; p++) begin
+        if (spatz_mem_rsp_valid_i[p]) begin
+          $fwrite(vlsu_log_fd,
+                  "[VLSU %0t] MEM_RSP  port=%0d wb_consumed=%b store_count_q=%0d\n",
+                  $time, p, rob_push[p], store_count_q[p]);
+        end
+      end
+
+      // Commit FIFO pop (next commit op latching).
+      if (commit_insn_pop) begin
+        $fwrite(vlsu_log_fd,
+                "[VLSU %0t] COMMIT_NEXT id=%0d vd=%0d is_load=%b vl=%0d vsew=%0d is_indexed=%b is_strided=%b\n",
+                $time, commit_insn_d.id, commit_insn_d.vd,
+                commit_insn_d.is_load, commit_insn_d.vl,
+                commit_insn_d.vsew, commit_insn_d.is_indexed,
+                commit_insn_d.is_strided);
+      end
+
+      // VLSU retirement (this is what clears the controller's deps mask).
+      if (vlsu_rsp_valid_o) begin
+        $fwrite(vlsu_log_fd,
+                "[VLSU %0t] VLSU_RSP id=%0d\n",
+                $time, vlsu_rsp_o.id);
+      end
+
+      // Per-cycle state snapshot when pending/finished masks change.
+      if (mem_insn_pending_q  != vlsu_pending_prev
+       || mem_insn_finished_q != vlsu_finished_prev) begin
+        $fwrite(vlsu_log_fd,
+                "[VLSU %0t] MEM_STATE pending=%b finished=%b commit_q.id=%0d commit_q.vd=%0d commit_q.is_load=%b\n",
+                $time, mem_insn_pending_q, mem_insn_finished_q,
+                commit_insn_q.id, commit_insn_q.vd, commit_insn_q.is_load);
+      end
+    end
+  end
+
+  final begin
+    if (vlsu_log_fd != 0) $fclose(vlsu_log_fd);
+  end
+  // verilog_lint: waive-stop always-ff-non-blocking
+  // synthesis translate_on
 
 endmodule : spatz_vlsu

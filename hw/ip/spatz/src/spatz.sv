@@ -191,6 +191,16 @@ module spatz import spatz_pkg::*; import rvv_pkg::*; import fpnew_pkg::*; #(
   vrf_be_t   [NrWritePorts-1:0] vrf_wbe;
   logic      [NrWritePorts-1:0] vrf_wvalid;
   logic      [NrWritePorts-1:0] vrf_vtl_redirect_write;
+
+  // Per-port "this VRF write completes a full VRF word" mask used to gate
+  // scoreboard chaining. For unit-stride writes (full-byte wbe) this is high
+  // every write; for split half-word writes (vluxei / vlse) it is high only
+  // on the second of the two per-word writes. Sourced from the producing
+  // unit; only the VLSU produces split writes today (VFU/VSLDU always write
+  // a full word per cycle), so those bits are tied to vrf_wvalid. See
+  // `project_vluxei_vfmacc_raw_hazard`.
+  logic      [NrWritePorts-1:0] sb_wrote_result;
+  logic                         vlsu_word_complete;
   // Read ports
   vrf_addr_t [NrReadPorts-1:0]  vrf_raddr;
   logic      [NrReadPorts-1:0]  vrf_re;
@@ -215,6 +225,14 @@ module spatz import spatz_pkg::*; import rvv_pkg::*; import fpnew_pkg::*; #(
   vrf_data_t                    vrf_vtl_rdata;
   logic                         vrf_vtl_rvalid;
   logic                         vrf_vtl_rgather_en;
+
+  // Gate the scoreboard's "wrote_result" tick for the VLSU port on a
+  // word-complete VRF write so the consumer can only chain in after a full
+  // VRF word is in the regfile. VFU / VSLDU always write a full word per
+  // cycle so their bits use vrf_wvalid directly.
+  assign sb_wrote_result[VFU_VD_WD]   = vrf_wvalid[VFU_VD_WD];
+  assign sb_wrote_result[VLSU_VD_WD]  = vrf_wvalid[VLSU_VD_WD] & vlsu_word_complete;
+  assign sb_wrote_result[VSLDU_VD_WD] = vrf_wvalid[VSLDU_VD_WD];
 
   spatz_vrf #(
     .NrReadPorts (NrReadPorts ),
@@ -305,7 +323,7 @@ module spatz import spatz_pkg::*; import rvv_pkg::*; import fpnew_pkg::*; #(
     .vtl_raddr_o      (vrf_raddr[VSLDU_VS2_RD]),
     // Scoreboard check
     .sb_id_i          (sb_id           ),
-    .sb_wrote_result_i(vrf_wvalid      ),
+    .sb_wrote_result_i(sb_wrote_result ),
     .sb_enable_i      ({sb_we, sb_re}  ),
     .sb_enable_o      ({vrf_we, vrf_re}),
     .sb_vtl_redirect_read_o  (vrf_vtl_redirect_read ), // bowwang: leverage the new op_vtl field
@@ -374,6 +392,7 @@ module spatz import spatz_pkg::*; import rvv_pkg::*; import fpnew_pkg::*; #(
     .vrf_we_o                (sb_we[VLSU_VD_WD]                                    ),
     .vrf_wbe_o               (vrf_wbe[VLSU_VD_WD]                                  ),
     .vrf_wvalid_i            (vrf_wvalid[VLSU_VD_WD]                               ),
+    .vlsu_word_complete_o    (vlsu_word_complete                                   ),
     .vrf_raddr_o             ({vrf_raddr[VLSU_VS2_RD], vrf_raddr[VLSU_VD_RD]}      ),
     .vrf_re_o                ({sb_re[VLSU_VS2_RD],     sb_re[VLSU_VD_RD]}          ),
     .vrf_rdata_i             ({vrf_rdata[VLSU_VS2_RD], vrf_rdata[VLSU_VD_RD]}      ),
