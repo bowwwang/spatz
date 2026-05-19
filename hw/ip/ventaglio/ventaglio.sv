@@ -25,9 +25,11 @@ module ventaglio
     // Spatz request
     input  spatz_req_t       spatz_req_i,
     input  logic             spatz_req_valid_i,
-    output logic             spatz_req_ready_o,
+    // VTL admit handshake to the controller. High when the spill
+    // register can accept the next use_vtl op (vventclr or vfx).
+    output logic             vtl_req_ready_o,
     input  logic             spatz_vfu_req_ready_i,
-    // VTL response
+    // VTL response (retirement path for vventclr; vfx retires via vfu_rsp)
     output logic             vtl_rsp_valid_o,
     output vsldu_rsp_t       vtl_rsp_o,
     // VFU response
@@ -91,7 +93,7 @@ module ventaglio
     .rst_ni (rst_ni                                             ),
     .data_i (spatz_req_d                                        ),
     .valid_i(spatz_req_valid_i && spatz_req_i.op_vtl.use_vtl    ),
-    .ready_o(spatz_req_ready_o                                  ),
+    .ready_o(vtl_req_ready_o                                    ),
     .data_o (spatz_req                                          ),
     .valid_o(spatz_req_valid                                    ),
     .ready_i(spatz_req_ready                                    )

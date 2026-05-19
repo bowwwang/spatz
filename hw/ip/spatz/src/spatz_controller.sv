@@ -53,9 +53,13 @@ module spatz_controller
     input  logic                                   vsldu_req_ready_i,
     input  logic                                   vsldu_rsp_valid_i,
     input  vsldu_rsp_t                             vsldu_rsp_i,
-    // VTL
-    input  vrf_addr_t                              vtl_raddr_i,
-    output vrf_addr_t                              vtl_raddr_o,
+    // VTL (Ventaglio) — separate control path so VTL and VSLDU can share
+    // the same physical VRF master port while keeping admit/retire
+    // handshakes distinct. `vtl_rsp_*` only fires for vventclr; vfx ops
+    // (ex_unit=VFU, op_vtl.use_vtl=1) retire via vfu_rsp.
+    input  logic                                   vtl_req_ready_i,
+    input  logic                                   vtl_rsp_valid_i,
+    input  vsldu_rsp_t                             vtl_rsp_i,
     // VRF Scoreboard
     input  logic             [NrVregfilePorts-1:0]              sb_enable_i,
     input  logic             [NrWritePorts-1:0]                 sb_wrote_result_i,
@@ -101,10 +105,7 @@ module spatz_controller
   `FF(vtype_q,   vtype_d,   '{vill: 1'b1, vsew: EW_8, vlmul: LMUL_1, default: '0})
   `FF(vtl_en_q,  vtl_en_d, 1'b0)     // VTL extension enable 
   `FF(VTLVreg_q, VTLVreg_d, '0)     // VTL register setting
-  `FF(VTL_cfg_q, VTL_cfg_d, '0)   
-
-  // Pass ventaglio's master read address through unchanged (no remap).
-  assign vtl_raddr_o = vtl_raddr_i; 
+  `FF(VTL_cfg_q, VTL_cfg_d, '0)  
 
 
   always_comb begin : proc_vcsr
@@ -427,9 +428,24 @@ module spatz_controller
       scoreboard_d[vsldu_rsp_i.id]             = '0;
       narrow_wide_d[vsldu_rsp_i.id]            = 1'b0;
       wrote_result_narrowing_d[vsldu_rsp_i.id] = 1'b0;
-      vtl_table_d[vsldu_rsp_i.id]              = '0; 
+      vtl_table_d[vsldu_rsp_i.id]              = '0;
       for (int unsigned insn = 0; insn < NrParallelInstructions; insn++)
         scoreboard_d[insn].deps[vsldu_rsp_i.id] = 1'b0;
+    end
+    if (vtl_rsp_valid_i) begin
+      for (int unsigned vreg = 0; vreg < NRVREG; vreg++) begin
+        if (read_table_q[vreg].id == vtl_rsp_i.id && read_table_q[vreg].valid)
+          read_table_d[vreg] = '0;
+        if (write_table_q[vreg].id == vtl_rsp_i.id && write_table_q[vreg].valid)
+          write_table_d[vreg] = '0;
+      end
+
+      scoreboard_d[vtl_rsp_i.id]             = '0;
+      narrow_wide_d[vtl_rsp_i.id]            = 1'b0;
+      wrote_result_narrowing_d[vtl_rsp_i.id] = 1'b0;
+      vtl_table_d[vtl_rsp_i.id]              = '0;
+      for (int unsigned insn = 0; insn < NrParallelInstructions; insn++)
+        scoreboard_d[insn].deps[vtl_rsp_i.id] = 1'b0;
     end
 
     // Initialize the scoreboard metadata if we have a new instruction issued.
@@ -548,15 +564,19 @@ module spatz_controller
   // not ready yet. Or we have a change in LMUL, for which we need to let all the
   // units finish first before scheduling a new operation (to avoid running into
   // issues with the socreboard).
-  logic stall, vfu_stall, vlsu_stall, vsldu_stall;
-  assign stall       = (vfu_stall | vlsu_stall | vsldu_stall) & req_buffer_valid;
+  logic stall, vfu_stall, vlsu_stall, vsldu_stall, vtl_stall;
+  assign stall       = (vfu_stall | vlsu_stall | vsldu_stall | vtl_stall)
+                       & req_buffer_valid;
   assign vfu_stall   = ~vfu_req_ready_i & (spatz_req.ex_unit == VFU);
   assign vlsu_stall  = ~vlsu_req_ready_i & (spatz_req.ex_unit == LSU);
-  // vsldu_req_ready_i is now driven by ventaglio's spill ready (vsldu is
-  // dead). Stall on it for SLD-routed ops AND for any VTL op (which also
-  // needs ventaglio's spill), so vfxmacc/vfxmul wait for vventclr to drain.
-  assign vsldu_stall = ~vsldu_req_ready_i & (spatz_req.ex_unit == SLD ||
-                                              spatz_req.op_vtl.use_vtl);
+  // VSLDU now stalls only for true SLD-routed non-VTL ops (the VTL/VSLDU
+  // shared-port arbiter routes use_vtl ops through ventaglio instead).
+  assign vsldu_stall = ~vsldu_req_ready_i &
+                       (spatz_req.ex_unit == SLD && !spatz_req.op_vtl.use_vtl);
+  // VTL stalls for ANY use_vtl op (vventclr = SLD-routed, vfx = VFU-routed)
+  // so vfxmacc/vfxmul wait for vventclr (and other in-flight VTL ops) to
+  // drain ventaglio's spill register before admitting.
+  assign vtl_stall   = ~vtl_req_ready_i & spatz_req.op_vtl.use_vtl;
 
   // Running instructions
   logic      [NrParallelInstructions-1:0] running_insn_d, running_insn_q;
@@ -664,9 +684,12 @@ module spatz_controller
     if (vlsu_rsp_valid_i) begin 
       running_insn_d[vlsu_rsp_i.id] = 1'b0;
     end 
-    if (vsldu_rsp_valid_i) begin 
+    if (vsldu_rsp_valid_i) begin
       running_insn_d[vsldu_rsp_i.id] = 1'b0;
-    end 
+    end
+    if (vtl_rsp_valid_i) begin
+      running_insn_d[vtl_rsp_i.id] = 1'b0;
+    end
   end: proc_next_insn_id
 
   // Respond to core about the decoded instruction.
@@ -905,6 +928,10 @@ module spatz_controller
       if (vsldu_rsp_valid_i) begin
         $fwrite(sb_log_fd, "[SB %0t]   RETIRE_VSLDU id=%0d\n",
                 $time, vsldu_rsp_i.id);
+      end
+      if (vtl_rsp_valid_i) begin
+        $fwrite(sb_log_fd, "[SB %0t]   RETIRE_VTL   id=%0d\n",
+                $time, vtl_rsp_i.id);
       end
 
       // wrote_result_q transitions: this is the "narrow→done" chain that lets
