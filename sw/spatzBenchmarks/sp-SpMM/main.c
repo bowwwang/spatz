@@ -4,6 +4,10 @@
 
 // Author: Bowen Wang <bowwang@iis.ee.ethz.ch>
 
+// Compile with -DUSE_BASELINE to build the RVV-only baseline kernel
+// (vluxei/vfmacc/vsuxei). Without the flag, builds the Ventaglio
+// (vfx) kernel that uses the VTL bank.
+
 #include <benchmark.h>
 #include <debug.h>
 #include <snrt.h>
@@ -11,11 +15,12 @@
 
 #include "data/layer.h"
 #include "data/data_spmm.h"
-#include "kernel/sp-SpMM.c"
+#include "kernel/sp-SpMM.c"  // declares + defines both spmm_ventaglio and spmm_baseline
 
 static float    *a;
 static float    *w;
 static uint32_t *nm_index;
+static uint32_t *byte_offsets;  // baseline-only scratch, harmless when unused
 static float    *res;
 static float    *golden;
 
@@ -44,16 +49,15 @@ static int fp32_check(const float *ref, const float *got,
 int main(void) {
   const unsigned int cid = snrt_cluster_core_idx();
 
-  // Allocate in L1
   if (cid == 0) {
-    a        = (float    *)snrt_l1alloc(spmm_l.M * spmm_l.N      * sizeof(float));
-    w        = (float    *)snrt_l1alloc(spmm_l.N * spmm_l.P_W    * sizeof(float));
-    nm_index = (uint32_t *)snrt_l1alloc(spmm_l.NM_INDEX_WORDS    * sizeof(uint32_t));
-    res      = (float    *)snrt_l1alloc(spmm_l.M * spmm_l.P      * sizeof(float));
-    golden   = (float    *)snrt_l1alloc(spmm_l.M * spmm_l.P      * sizeof(float));
+    a            = (float    *)snrt_l1alloc(spmm_l.M * spmm_l.N      * sizeof(float));
+    w            = (float    *)snrt_l1alloc(spmm_l.N * spmm_l.P_W    * sizeof(float));
+    nm_index     = (uint32_t *)snrt_l1alloc(spmm_l.NM_INDEX_WORDS    * sizeof(uint32_t));
+    byte_offsets = (uint32_t *)snrt_l1alloc(spmm_l.P_W               * sizeof(uint32_t));
+    res          = (float    *)snrt_l1alloc(spmm_l.M * spmm_l.P      * sizeof(float));
+    golden       = (float    *)snrt_l1alloc(spmm_l.M * spmm_l.P      * sizeof(float));
   }
 
-  // DMA the DRAM data into L1
   if (cid == 0) {
     snrt_dma_start_1d(a,        spmm_a_dram,
                       spmm_l.M * spmm_l.N      * sizeof(float));
@@ -65,21 +69,35 @@ int main(void) {
                       spmm_l.M * spmm_l.P      * sizeof(float));
     snrt_dma_wait_all();
 
-    // Sentinel: pre-fill `res` with 0xCAFEBABE so any position the kernel
+#ifdef USE_BASELINE
+    // Baseline accumulates into res via vluxei/vsuxei; start from zero.
+    for (uint32_t i = 0; i < spmm_l.M * spmm_l.P; i++) {
+      res[i] = 0.0f;
+    }
+#else
+    // vfx kernel: pre-fill with 0xCAFEBABE so any position the kernel
     // fails to write shows up as 0xCAFEBABE in the mismatch print.
     for (uint32_t i = 0; i < spmm_l.M * spmm_l.P; i++) {
       *(uint32_t *)&res[i] = 0xCAFEBABEu;
     }
+#endif
   }
 
   snrt_cluster_hw_barrier();
 
   if (cid == 0) {
     start_kernel();
-    sp_spmm(res, a, w, nm_index,
-            spmm_l.M, spmm_l.N, spmm_l.P, spmm_l.P_W,
-            spmm_l.NM_INDEX_ROW_WORDS,
-            spmm_l.IDX_WIDTH, spmm_l.M_SPARSE, spmm_l.N_SPARSE);
+#ifdef USE_BASELINE
+    spmm_baseline(res, a, w, nm_index, byte_offsets,
+                  spmm_l.M, spmm_l.N, spmm_l.P, spmm_l.P_W,
+                  spmm_l.NM_INDEX_ROW_WORDS,
+                  spmm_l.IDX_WIDTH, spmm_l.M_SPARSE, spmm_l.N_SPARSE);
+#else
+    spmm_ventaglio(res, a, w, nm_index,
+                   spmm_l.M, spmm_l.N, spmm_l.P, spmm_l.P_W,
+                   spmm_l.NM_INDEX_ROW_WORDS,
+                   spmm_l.IDX_WIDTH, spmm_l.M_SPARSE, spmm_l.N_SPARSE);
+#endif
     stop_kernel();
   }
 
@@ -90,7 +108,12 @@ int main(void) {
       printf("WRONG!\n");
     else
       printf("CORRECT!\n");
+#ifdef USE_BASELINE
+    printf("\n----- (%dx%dx%d) SpMM - baseline (RVV vluxei/vsuxei) -----\n",
+           spmm_l.M, spmm_l.N, spmm_l.P);
+#else
     printf("\n----- (%dx%d) SpMM - vfx -----\n", spmm_l.N, spmm_l.P);
+#endif
     printf("DONE\n");
   }
 

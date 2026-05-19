@@ -77,11 +77,6 @@ add_library(benchmark benchmark/benchmark.c)
 # add_library(dp-fft dp-fft/kernel/fft.c)
 # add_library(sp-fft sp-fft/kernel/fft.c)
 
-# add_library(idx-macc idx-macc/data/data_vfxmacc.c)
-add_library(f32-SpMV-vfx f32-SpMV-vfx/data/data_vfxmacc.c)
-add_library(f32-SpMM-vfx f32-SpMM-vfx/data/data_vfxmacc.c)
-# add_library(f32_SpMV-baseline f32_SpMV-baseline/data/data_vfxmacc.c)
-# add_library(f32_SpMM-baseline f32_SpMM-baseline/data/data_vfxmacc.c)
 # add_library(f32-SpMV-vfx-gated f32-SpMV-vfx-gated/data/data_vfxmacc.c)
 # add_library(f32-SpMM-vfx-gated f32-SpMM-vfx-gated/data/data_vfxmacc.c)
 
@@ -130,10 +125,16 @@ set(SNITCH_TEST_PREFIX spatzBenchmarks-)
 # add_spatz_test_twoParam(sp-fft sp-fft/main.c 256 2)
 # add_spatz_test_twoParam(sp-fft sp-fft/main.c 512 2)
 
-# add_spatz_test_noParam(idx-macc idx-macc/main.c)
-add_spatz_test_noParam(f32-SpMV-vfx f32-SpMV-vfx/main.c)
-add_spatz_test_noParam(f32-SpMM-vfx f32-SpMM-vfx/main.c)
-# add_spatz_test_noParam(f32_SpMV-baseline f32_SpMV-baseline/main.c)
-# add_spatz_test_noParam(f32_SpMM-baseline f32_SpMM-baseline/main.c)
+# sp-SpMV / sp-SpMM each build TWO binaries from the same main.c:
+#   - <name>          : Ventaglio (vfx) kernel
+#   - <name>-baseline : RVV vluxei/vfmacc/vsuxei reference kernel (-DUSE_BASELINE)
+add_spatz_test_noParam(sp-SpMV sp-SpMV/main.c)
+add_spatz_test_noParam(sp-SpMV-baseline sp-SpMV/main.c)
+target_compile_definitions(test-${SNITCH_TEST_PREFIX}sp-SpMV-baseline PUBLIC USE_BASELINE)
+
+add_spatz_test_noParam(sp-SpMM sp-SpMM/main.c)
+add_spatz_test_noParam(sp-SpMM-baseline sp-SpMM/main.c)
+target_compile_definitions(test-${SNITCH_TEST_PREFIX}sp-SpMM-baseline PUBLIC USE_BASELINE)
+
 # add_spatz_test_noParam(f32-SpMV-vfx-gated f32-SpMV-vfx-gated/main.c)
 # add_spatz_test_noParam(f32-SpMM-vfx-gated f32-SpMM-vfx-gated/main.c)
