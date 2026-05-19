@@ -521,13 +521,20 @@ module spatz_controller
       scoreboard_d[insn].deps[insn] = 1'b0;
   end
 
-  // Per-vreg "writer in flight" export. write_table_q[v].valid is set when a
-  // new writer is issued (line ~494) and cleared on the writer's retire
-  // (lines ~381, ~396, ~410). Consumers (Ventaglio prefetch) read this
-  // combinationally to gate VRF reads safely without inferring 1-cycle
-  // stability delays from spatz_req_i.
+  // Per-vreg "writer in flight" export. Sourced from `write_table_d` (the
+  // about-to-register value) rather than `write_table_q` so the signal
+  // falls the same cycle the writer's response fires, not one cycle
+  // later. This lets Ventaglio's `fetch_for_next` prefetch a freshly-
+  // written index vreg (e.g. sp-SpMV's v20 written by vlx) one cycle
+  // sooner — saving one cycle of the inter-op bubble on `rvalid_o` at
+  // the VFU boundary. Issue side is unaffected: write_table_d goes high
+  // the cycle a writer is admitted, same as before. Safe because the
+  // _d wire is a combinational fan-in of registered inputs only
+  // (write_table_q, *_rsp_valid_i, *_rsp_i.id, and the issue claims),
+  // and the prefetch consumer is itself fully combinational so cycle-
+  // accurate visibility is what we want.
   for (genvar v = 0; v < NRVREG; v++) begin : gen_vreg_pending_export
-    assign vreg_write_pending_o[v] = write_table_q[v].valid;
+    assign vreg_write_pending_o[v] = write_table_d[v].valid;
   end
 
   /////////////
@@ -831,8 +838,8 @@ module spatz_controller
 
   // Cluster `$time` is in ns (timeunit 1ns/1ps override applied at compile).
   // Filter is in ns; widen if needed.
-  localparam time SB_LOG_T_MIN = 3830;  // ns
-  localparam time SB_LOG_T_MAX = 4008;  // ns
+  localparam time SB_LOG_T_MIN = 8000;  // ns
+  localparam time SB_LOG_T_MAX = 8150;  // ns
 
   // Port-name helper used by the blocked-port report.
   function automatic string sb_port_name(int p);

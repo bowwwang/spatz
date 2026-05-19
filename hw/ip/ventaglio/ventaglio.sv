@@ -340,6 +340,12 @@ module ventaglio
   // the common case at op transitions. On-demand fetch (`fetch_for_current`)
   // covers the rare first-op-of-a-stream case at the cost of a 1-cycle
   // bubble.
+  //
+  // NOTE: A `vrf_rdata_i → index_q` combinational forwarding path was
+  // considered to close the on-demand bubble but rejected on backend
+  // timing grounds (rdata → index → scatter/gather datapath would
+  // become the critical path). The bubble must be closed on the
+  // trigger side (earlier prefetch fire), not the consumer side.
   assign index_q       = index_data_q[active_buf_q];
   assign index_valid_q = slot_hit;
 

@@ -1,0 +1,21 @@
+// Copyright 2025 ETH Zurich and University of Bologna.
+// Licensed under the Apache License, Version 2.0, see LICENSE for details.
+// SPDX-License-Identifier: Apache-2.0
+
+// Parameters for f32_SpMM-baseline:
+//   res[M x P]  =  A[M x N]  *  W[N x P]    (W is n:m structured sparse)
+//
+//   format : "1_to_4" or "2_to_4"   (n:m pattern)
+//   M      : batch / output row count
+//   N      : reduction dim
+//   P_W    : compact column count per sparse row of W
+//   seed   : RNG seed for activation / weight / index draws
+
+{
+    kernel: "SpMM"
+    format: "1_to_4",
+    M: 8,
+    N: 4,
+    P_W: 32,
+    seed: 1
+}

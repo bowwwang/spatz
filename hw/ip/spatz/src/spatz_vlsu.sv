@@ -897,12 +897,47 @@ module spatz_vlsu
     // Request indexes
     vrf_re_o[1] = mem_is_indexed;
 
-    // Count which vs2 element we should load (indexed loads)
-    vs2_elem_id_d = vs2_elem_id_q;
-    if (&(pending_index ^ ~mem_operation_valid) && mem_is_indexed)
-      vs2_elem_id_d = vs2_elem_id_q + 1;
-    if (mem_spatz_req_ready)
-      vs2_elem_id_d = '0;
+    // Count which vs2 element we should load (indexed loads).
+    //
+    // Bug fix 2026-05-19: bound the advance so vs2_elem_id_q cannot exceed
+    // the number of VRF words actually needed for the current vl. Without
+    // this bound, if ports stall mid-op (spill backpressure, etc.) the
+    // `pending_index ^ ~mem_operation_valid` pattern can match for several
+    // consecutive cycles AFTER the last legitimate word transition, firing
+    // extra advances and pushing vs2_elem_id past the populated region of
+    // the vreg group. Manifests in f32_SpMM-baseline (LMUL=4 or LMUL=2,
+    // P_W=32, two back-to-back vsuxei sharing v4) where vs2_elem_id goes
+    // 0→2→3→4→5 within one vsuxei (should max at 3) and the VRF returns
+    // X for waddr ≥ 0x0C (= word 4 of v4 group, never written by vle v4).
+    // See `project_vs2_elem_id_overrun` memory for the waveform trace.
+    //
+    // max_vs2_elem_id = ceil(vl_bytes / VRFWordWidth_bytes) - 1
+    // where mem_spatz_req.vl is already in BYTES (see proc_spatz_req).
+    // For SEW=32 EW=32 vl=32: vl_bytes=128, VRFWordWidth_bytes=32 → max=3.
+    begin : proc_vs2_elem_id
+      automatic vreg_elem_t max_vs2_elem_id;
+      max_vs2_elem_id = (mem_spatz_req.vl + (VRFWordWidth/8) - 1) >> $clog2(VRFWordWidth/8);
+      // Subtract 1 since elem_id is 0-indexed; guard against vl=0.
+      max_vs2_elem_id = (max_vs2_elem_id == 0) ? '0 : (max_vs2_elem_id - 1);
+
+      vs2_elem_id_d = vs2_elem_id_q;
+      // Bug fix 2026-05-19 (2/2): gate the advance on `mem_spatz_req_valid`.
+      // Without this, during the idle cycle right after an indexed op
+      // retires (spill empty: mem_spatz_req_valid=0, mem_op_valid=0000,
+      // counter=0 from load, eid=0 from reset), the advance condition
+      // `&(pending ^ ~mem_op_valid) = &(0 ^ 1) = 1` matches and
+      // `mem_is_indexed` is still stale 1 (spill_register holds last
+      // data when invalid). eid spuriously increments. When the next
+      // op admits, it inherits a non-zero eid and runs one word ahead
+      // of counter — wedging the second back-to-back vsuxei in
+      // f32_SpMM-baseline at counter=16, eid=3 (was 2 originally).
+      if (mem_spatz_req_valid
+          && &(pending_index ^ ~mem_operation_valid) && mem_is_indexed
+          && (vs2_elem_id_q < max_vs2_elem_id))
+        vs2_elem_id_d = vs2_elem_id_q + 1;
+      if (mem_spatz_req_ready)
+        vs2_elem_id_d = '0;
+    end
 
     if (commit_insn_valid && commit_insn_q.is_load) begin
       // If we have a valid element in the buffer, store it back to the register file
@@ -1174,8 +1209,8 @@ module spatz_vlsu
   // Default window targets the id=1 stall window seen in the scoreboard log:
   // id=1 issued ~13661 ns, stops writing beats ~13683 ns, kernel deadlocked
   // by ~13789 ns. Widen if needed.
-  localparam time VLSU_LOG_T_MIN = 3830;
-  localparam time VLSU_LOG_T_MAX = 4008;
+  localparam time VLSU_LOG_T_MIN = 8000;
+  localparam time VLSU_LOG_T_MAX = 8150;
 
   // Track previous values for change-detection on MEM_STATE.
   logic [NrParallelInstructions-1:0] vlsu_pending_prev;
