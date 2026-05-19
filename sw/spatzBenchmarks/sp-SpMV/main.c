@@ -14,7 +14,7 @@
 #include <stdio.h>
 
 #include "data/layer.h"
-#include "data/data_spmv.h"
+#include DATAHEADER  // selected by CMake via -DDATAHEADER="data/data_spmv_<fmt>_N<N>_PW<PW>.h"
 #include "kernel/sp-SpMV.c"  // declares + defines both spmv_ventaglio and spmv_baseline
 
 static float    *a;

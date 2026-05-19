@@ -5,15 +5,20 @@
 
 # Author: Bowen Wang <bowwang@iis.ee.ethz.ch>
 #
-# Emit `data/data_spmv.h` from a hjson config (`script/spmv.json`).
-# Matches the structure of `hp-fmatmul/script/gen_data.py`: parse a hjson
-# config, emit a layer instance + named data arrays. No torch dependency:
-# SpMV inputs are random fp32 scalars + structured-sparse indices.
+# Emit a per-shape data header for sp-SpMV. Drive each shape from CLI:
+#
+#   ./gen_data.py --format 1_to_4 --N 16  --P-W 256
+#   ./gen_data.py --format 2_to_4 --N 32  --P-W 512  --seed 7
+#
+# Output filename is derived from the shape:
+# `data/data_spmv_<fmt>_N<N>_PW<PW>.h` where <fmt> is `1to4` / `2to4`
+# (underscores dropped to keep CMake target suffixes clean). See
+# `script/gen_all.sh` for the wrapper that regenerates every committed
+# variant.
 
 import argparse
 import pathlib
 import random
-import hjson
 from typing import List, Tuple
 
 
@@ -105,13 +110,14 @@ def emit_spmv_layer(name: str, **kwargs) -> str:
     return s
 
 
-def gen_spmv(param):
-    n_sparse, m_sparse = parse_format(param['format'])
-    idx_width = (m_sparse - 1).bit_length()
+def fmt_tag(fmt: str) -> str:
+    """JSON-style `1_to_4` -> filename/CMake-suffix-style `1to4`."""
+    return fmt.replace('_', '')
 
-    N   = int(param['N'])
-    P_W = int(param['P_W'])
-    seed = int(param['seed'])
+
+def gen_spmv(fmt: str, N: int, P_W: int, seed: int):
+    n_sparse, m_sparse = parse_format(fmt)
+    idx_width = (m_sparse - 1).bit_length()
 
     if N <= 0:
         raise ValueError('N must be positive.')
@@ -162,7 +168,7 @@ def gen_spmv(param):
             golden[out_pos] += act * w[base_w + j]
 
     return {
-        'format':    param['format'],
+        'format':    fmt,
         'N':         N,
         'P':         P,
         'P_W':       P_W,
@@ -179,14 +185,8 @@ def gen_spmv(param):
     }
 
 
-def emit_header_file(kernel: str, **kwargs):
-    out_dir = pathlib.Path(__file__).parent.parent / 'data'
-    if kernel == 'SpMV':
-        out = out_dir / 'data_spmv.h'
-        body = emit_spmv_layer('spmv', **kwargs)
-    else:
-        raise ValueError(f'Unknown kernel: {kernel!r}')
-
+def emit_header_file(out_path: pathlib.Path, **kwargs):
+    body = emit_spmv_layer('spmv', **kwargs)
     header = (
         '// Copyright 2025 ETH Zurich and University of Bologna.\n'
         '// Licensed under the Apache License, Version 2.0, see LICENSE for details.\n'
@@ -199,25 +199,34 @@ def emit_header_file(kernel: str, **kwargs):
         '#pragma once\n\n'
         '#include <stdint.h>\n\n'
     )
-    with out.open('w') as f:
+    with out_path.open('w') as f:
         f.write(header + body)
-    print(f'Wrote {out}')
+    print(f'Wrote {out_path}')
 
 
 def main():
-    parser = argparse.ArgumentParser(description='Generate data for sp-SpMV')
-    parser.add_argument('-c', '--cfg', type=pathlib.Path, required=True,
-                        help='hjson config (e.g., script/spmv.json)')
+    parser = argparse.ArgumentParser(description='Generate one data header for sp-SpMV')
+    parser.add_argument('--format', default='1_to_4', choices=['1_to_4', '2_to_4'],
+                        help='n:m sparsity pattern (default: 1_to_4)')
+    parser.add_argument('--N', type=int, default=16,
+                        help='reduction dim (default: 16)')
+    parser.add_argument('--P-W', dest='P_W', type=int, default=256,
+                        help='compact column count per sparse row (default: 256)')
+    parser.add_argument('--seed', type=int, default=1,
+                        help='RNG seed (default: 1)')
+    parser.add_argument('--out', type=pathlib.Path, default=None,
+                        help='output header path (default: '
+                             'data/data_spmv_<fmt>_N<N>_PW<PW>.h)')
     args = parser.parse_args()
 
-    with args.cfg.open() as f:
-        param = hjson.loads(f.read())
+    kwargs = gen_spmv(args.format, args.N, args.P_W, args.seed)
 
-    if param['kernel'] == 'SpMV':
-        kwargs = gen_spmv(param)
-        emit_header_file('SpMV', **kwargs)
-    else:
-        raise ValueError(f'Unknown kernel: {param["kernel"]!r}')
+    if args.out is None:
+        data_dir = pathlib.Path(__file__).parent.parent / 'data'
+        args.out = data_dir / (
+            f'data_spmv_{fmt_tag(args.format)}_N{args.N}_PW{args.P_W}.h')
+
+    emit_header_file(args.out, **kwargs)
 
 
 if __name__ == '__main__':

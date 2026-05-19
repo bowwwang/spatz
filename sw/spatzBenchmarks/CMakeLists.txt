@@ -54,6 +54,28 @@ macro(add_spatz_test_threeParam name file param1 param2 param3)
   target_compile_definitions(test-${SNITCH_TEST_PREFIX}${target_name} PUBLIC DATAHEADER="data/data_${param1}_${param2}_${param3}.h" SNRT_NFPU_PER_CORE=${SNRT_NFPU_PER_CORE})
 endmacro()
 
+# Parametrized SpMV variant: (format, N, P_W). Selects data header
+# `data/data_spmv_<fmt>_N<N>_PW<PW>.h`. Target name suffixed with the shape.
+macro(add_spatz_test_spmv name file fmt N P_W)
+  set(target_name ${name}_${fmt}_N${N}_PW${P_W})
+  add_snitch_test(${target_name} ${file})
+  target_link_libraries(test-${SNITCH_TEST_PREFIX}${target_name} benchmark ${SNITCH_RUNTIME})
+  target_compile_definitions(test-${SNITCH_TEST_PREFIX}${target_name} PUBLIC
+    DATAHEADER="data/data_spmv_${fmt}_N${N}_PW${P_W}.h"
+    SNRT_NFPU_PER_CORE=${SNRT_NFPU_PER_CORE})
+endmacro()
+
+# Parametrized SpMM variant: (format, M, N, P_W). Selects data header
+# `data/data_spmm_<fmt>_M<M>_N<N>_PW<PW>.h`. Target name suffixed with the shape.
+macro(add_spatz_test_spmm name file fmt M N P_W)
+  set(target_name ${name}_${fmt}_M${M}_N${N}_PW${P_W})
+  add_snitch_test(${target_name} ${file})
+  target_link_libraries(test-${SNITCH_TEST_PREFIX}${target_name} benchmark ${SNITCH_RUNTIME})
+  target_compile_definitions(test-${SNITCH_TEST_PREFIX}${target_name} PUBLIC
+    DATAHEADER="data/data_spmm_${fmt}_M${M}_N${N}_PW${P_W}.h"
+    SNRT_NFPU_PER_CORE=${SNRT_NFPU_PER_CORE})
+endmacro()
+
 # Benchmark library
 add_library(benchmark benchmark/benchmark.c)
 
@@ -125,16 +147,38 @@ set(SNITCH_TEST_PREFIX spatzBenchmarks-)
 # add_spatz_test_twoParam(sp-fft sp-fft/main.c 256 2)
 # add_spatz_test_twoParam(sp-fft sp-fft/main.c 512 2)
 
-# sp-SpMV / sp-SpMM each build TWO binaries from the same main.c:
-#   - <name>          : Ventaglio (vfx) kernel
-#   - <name>-baseline : RVV vluxei/vfmacc/vsuxei reference kernel (-DUSE_BASELINE)
-add_spatz_test_noParam(sp-SpMV sp-SpMV/main.c)
-add_spatz_test_noParam(sp-SpMV-baseline sp-SpMV/main.c)
-target_compile_definitions(test-${SNITCH_TEST_PREFIX}sp-SpMV-baseline PUBLIC USE_BASELINE)
+# sp-SpMV / sp-SpMM are parametrized by sparsity format + dimensions.
+# Each shape is registered TWICE — once as Ventaglio (vfx) and once as
+# `-baseline` (RVV reference, compiled with -DUSE_BASELINE). Data headers
+# are committed under data/ and regenerated via script/gen_all.sh.
+#
+#   SpMV : (format, N, P_W)
+#   SpMM : (format, M, N, P_W)
+#
+# To add a shape: edit script/gen_all.sh in the benchmark, run it, then
+# add the matching add_spatz_test_spm{v,m}(...) lines below.
 
-add_spatz_test_noParam(sp-SpMM sp-SpMM/main.c)
-add_spatz_test_noParam(sp-SpMM-baseline sp-SpMM/main.c)
-target_compile_definitions(test-${SNITCH_TEST_PREFIX}sp-SpMM-baseline PUBLIC USE_BASELINE)
+# --- SpMV variants (N=32, P_W=128) ---
+add_spatz_test_spmv(sp-SpMV          sp-SpMV/main.c 1to4 32 128)
+add_spatz_test_spmv(sp-SpMV-baseline sp-SpMV/main.c 1to4 32 128)
+target_compile_definitions(test-${SNITCH_TEST_PREFIX}sp-SpMV-baseline_1to4_N32_PW128
+  PUBLIC USE_BASELINE)
+
+add_spatz_test_spmv(sp-SpMV          sp-SpMV/main.c 2to4 32 128)
+add_spatz_test_spmv(sp-SpMV-baseline sp-SpMV/main.c 2to4 32 128)
+target_compile_definitions(test-${SNITCH_TEST_PREFIX}sp-SpMV-baseline_2to4_N32_PW128
+  PUBLIC USE_BASELINE)
+
+# --- SpMM variants (M=8, N=32, P_W=128) ---
+add_spatz_test_spmm(sp-SpMM          sp-SpMM/main.c 1to4 8 32 128)
+add_spatz_test_spmm(sp-SpMM-baseline sp-SpMM/main.c 1to4 8 32 128)
+target_compile_definitions(test-${SNITCH_TEST_PREFIX}sp-SpMM-baseline_1to4_M8_N32_PW128
+  PUBLIC USE_BASELINE)
+
+add_spatz_test_spmm(sp-SpMM          sp-SpMM/main.c 2to4 8 32 128)
+add_spatz_test_spmm(sp-SpMM-baseline sp-SpMM/main.c 2to4 8 32 128)
+target_compile_definitions(test-${SNITCH_TEST_PREFIX}sp-SpMM-baseline_2to4_M8_N32_PW128
+  PUBLIC USE_BASELINE)
 
 # add_spatz_test_noParam(f32-SpMV-vfx-gated f32-SpMV-vfx-gated/main.c)
 # add_spatz_test_noParam(f32-SpMM-vfx-gated f32-SpMM-vfx-gated/main.c)
