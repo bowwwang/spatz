@@ -99,9 +99,6 @@ add_library(benchmark benchmark/benchmark.c)
 # add_library(dp-fft dp-fft/kernel/fft.c)
 # add_library(sp-fft sp-fft/kernel/fft.c)
 
-# add_library(f32-SpMV-vfx-gated f32-SpMV-vfx-gated/data/data_vfxmacc.c)
-# add_library(f32-SpMM-vfx-gated f32-SpMM-vfx-gated/data/data_vfxmacc.c)
-
 # Tests
 enable_testing()
 set(SNITCH_TEST_PREFIX spatzBenchmarks-)
@@ -179,6 +176,3 @@ add_spatz_test_spmm(sp-SpMM          sp-SpMM/main.c 2to4 8 32 128)
 add_spatz_test_spmm(sp-SpMM-baseline sp-SpMM/main.c 2to4 8 32 128)
 target_compile_definitions(test-${SNITCH_TEST_PREFIX}sp-SpMM-baseline_2to4_M8_N32_PW128
   PUBLIC USE_BASELINE)
-
-# add_spatz_test_noParam(f32-SpMV-vfx-gated f32-SpMV-vfx-gated/main.c)
-# add_spatz_test_noParam(f32-SpMM-vfx-gated f32-SpMM-vfx-gated/main.c)
