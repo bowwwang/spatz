@@ -905,7 +905,9 @@ module spatz_decoder
         riscv_instr::VFSGNJX_VF,
         riscv_instr::VFMUL_VV,
         riscv_instr::VFMUL_VF,
+`ifdef VENTAGLIO
         riscv_instr::VFXMUL_VF,
+`endif
         riscv_instr::VFMADD_VV,
         riscv_instr::VFMADD_VF,
         riscv_instr::VFNMADD_VV,
@@ -957,7 +959,9 @@ module spatz_decoder
         riscv_instr::VFWMACC_VF,
         riscv_instr::VFWNMACC_VV,
         riscv_instr::VFWNMACC_VF,
+`ifdef VENTAGLIO
         riscv_instr::VFXMACC_VF,
+`endif
         riscv_instr::VFWMSAC_VV,
         riscv_instr::VFWMSAC_VF,
         riscv_instr::VFWNMSAC_VV,
@@ -1025,11 +1029,13 @@ module spatz_decoder
               riscv_instr::VFMUL_VV,
               riscv_instr::VFMUL_VF: spatz_req.op = VFMUL;
 
-              riscv_instr::VFXMUL_VF: begin 
+`ifdef VENTAGLIO
+              riscv_instr::VFXMUL_VF: begin
                 spatz_req.op = VFMUL;
                 spatz_req.op_vtl.use_vtl     = 1'b1;
                 spatz_req.op_vtl.scatter_vd  = 1'b1;
               end
+`endif
 
               riscv_instr::VFMACC_VV,
               riscv_instr::VFMACC_VF,
@@ -1210,6 +1216,7 @@ module spatz_decoder
                 spatz_req.op_arith.widen_vs1 = 1'b1;
                 spatz_req.op_arith.widen_vs2 = 1'b1;
               end
+`ifdef VENTAGLIO
               riscv_instr::VFXMACC_VF: begin
                 spatz_req.op                 = VFMADD;
                 spatz_req.vd_is_src          = 1'b1;
@@ -1217,8 +1224,8 @@ module spatz_decoder
                 spatz_req.op_vtl.gather_vd   = 1'b1;
                 spatz_req.op_vtl.scatter_vd  = 1'b1;
                 spatz_req.rs2 = decoder_req_i.rs1;
-
               end
+`endif
               riscv_instr::VFWNMACC_VV,
               riscv_instr::VFWNMACC_VF: begin
                 spatz_req.op                 = VFNMADD;
@@ -1269,66 +1276,67 @@ module spatz_decoder
           end
         end
 
-        riscv_instr::VFXMACC_VRF: begin                                                                                                                                                                                  
+`ifdef VENTAGLIO
+        riscv_instr::VFXMACC_VRF: begin
           automatic vreg_t       vd_field  = decoder_req_i.instr[11:7];
-          automatic logic [4:0]  rs1_field = decoder_req_i.instr[19:15];   // FP scalar reg id                                                                                                                           
-          automatic vreg_t       vs2_field = decoder_req_i.instr[24:20];   // weight vreg                                                                                                                                
-          automatic vreg_t       vs1_field = decoder_req_i.instr[31:27];   // index vreg                                                                                                                                 
-          automatic logic [1:0]  funct2    = decoder_req_i.instr[26:25];                                                                                                                                                 
-                                                                                                                                                                                                                         
-          // Only fp32 for now; reserve other funct2 codes                                                                                                                                                               
-          if (funct2 != 2'b00) illegal_instr = 1'b1;                                                                                                                                                                     
-                                                                                                                                                                                                                         
+          automatic logic [4:0]  rs1_field = decoder_req_i.instr[19:15];   // FP scalar reg id
+          automatic vreg_t       vs2_field = decoder_req_i.instr[24:20];   // weight vreg
+          automatic vreg_t       vs1_field = decoder_req_i.instr[31:27];   // index vreg
+          automatic logic [1:0]  funct2    = decoder_req_i.instr[26:25];
+
+          // Only fp32 for now; reserve other funct2 codes
+          if (funct2 != 2'b00) illegal_instr = 1'b1;
+
           spatz_req.op         = VFMADD;
-          spatz_req.ex_unit    = VFU;                                                                                                                                                                                    
-          // spatz_req.vtype.vsew = EW_32;                                                                                                                                                                                  
+          spatz_req.ex_unit    = VFU;
+          // spatz_req.vtype.vsew = EW_32;
           spatz_req.rm         = fpu_rnd_mode_i;
-          spatz_req.fm         = fpu_fmt_mode_i;                                                                                                                                                                         
-                                                                                                                                                                                                                         
-          // Accumulator (vd is also a source for FMA)                                                                                                                                                                   
-          spatz_req.vd         = vd_field;                                                                                                                                                                               
-          spatz_req.use_vd     = 1'b1;                                                                                                                                                                                   
+          spatz_req.fm         = fpu_fmt_mode_i;
+
+          // Accumulator (vd is also a source for FMA)
+          spatz_req.vd         = vd_field;
+          spatz_req.use_vd     = 1'b1;
           spatz_req.vd_is_src  = 1'b1;
-                                                                                                                                                                                                                         
-          // Weight goes through the VFU's vs1 path (mirrors VFXMACC_VF wiring)                                                                                                                                          
-          spatz_req.vs1        = vs2_field;                                                                                                                                                                              
-          spatz_req.use_vs1    = 1'b1;                                                                                                                                                                                   
-                                                                                                                                                                                                                         
-          // FP scalar register id (e.g., ft0) — VFU reads the value via the FRF                                                                                                                                         
-          spatz_req.rs2        = decoder_req_i.rs1;                                                                                                                                                                          
-                                                                                                                                                                                                                         
+
+          // Weight goes through the VFU's vs1 path (mirrors VFXMACC_VF wiring)
+          spatz_req.vs1        = vs2_field;
+          spatz_req.use_vs1    = 1'b1;
+
+          // FP scalar register id (e.g., ft0) — VFU reads the value via the FRF
+          spatz_req.rs2        = decoder_req_i.rs1;
+
           // VTL plumbing
           spatz_req.op_vtl.use_vtl    = 1'b1;
-          spatz_req.op_vtl.gather_vd  = 1'b1;                                                                                                                                                                            
+          spatz_req.op_vtl.gather_vd  = 1'b1;
           spatz_req.op_vtl.scatter_vd = 1'b1;
-          spatz_req.op_vtl.idx_vreg   = vs1_field;   // explicit index vreg                                                                                                                                              
-        end  
+          spatz_req.op_vtl.idx_vreg   = vs1_field;   // explicit index vreg
+        end
 
-        riscv_instr::VFXMUL_VRF: begin                                                                                                                                                                                   
+        riscv_instr::VFXMUL_VRF: begin
           automatic vreg_t       vd_field  = decoder_req_i.instr[11:7];
-          automatic vreg_t       vs2_field = decoder_req_i.instr[24:20];   // weight                                                                                                                                     
-          automatic vreg_t       vs1_field = decoder_req_i.instr[31:27];   // index                                                                                                                                      
-          automatic logic [1:0]  funct2    = decoder_req_i.instr[26:25];                                                                                                                                                 
-                                                                                                                                                                                                                         
-          // funct2=01 reserved for vfxmul (this op); other values illegal for now                                                                                                                                       
-          if (funct2 != 2'b01) illegal_instr = 1'b1;                                                                                                                                                                     
-                                                                                                                                                                                                                         
-          spatz_req.op        = VFMUL;                                                                                                                                                                                   
+          automatic vreg_t       vs2_field = decoder_req_i.instr[24:20];   // weight
+          automatic vreg_t       vs1_field = decoder_req_i.instr[31:27];   // index
+          automatic logic [1:0]  funct2    = decoder_req_i.instr[26:25];
+
+          // funct2=01 reserved for vfxmul (this op); other values illegal for now
+          if (funct2 != 2'b01) illegal_instr = 1'b1;
+
+          spatz_req.op        = VFMUL;
           spatz_req.ex_unit   = VFU;
-          spatz_req.rm        = fpu_rnd_mode_i;                                                                                                                                                                          
-          spatz_req.fm        = fpu_fmt_mode_i;                                                                                                                                                                          
-                                                                                                                                                                                                                         
-          // Result vreg (write-only — no accumulation, vd_is_src stays 0)                                                                                                                                               
-          spatz_req.vd        = vd_field;                                                                                                                                                                                
-          spatz_req.use_vd    = 1'b1;                                                                                                                                                                                    
-                        
-          // Weight goes through VFU's vs1 path (mirrors VFXMACC_VRF wiring)                                                                                                                                             
+          spatz_req.rm        = fpu_rnd_mode_i;
+          spatz_req.fm        = fpu_fmt_mode_i;
+
+          // Result vreg (write-only — no accumulation, vd_is_src stays 0)
+          spatz_req.vd        = vd_field;
+          spatz_req.use_vd    = 1'b1;
+
+          // Weight goes through VFU's vs1 path (mirrors VFXMACC_VRF wiring)
           spatz_req.vs1       = vs2_field;
-          spatz_req.use_vs1   = 1'b1;                                                                                                                                                                                    
-                        
-          // FP scalar value (substituted upstream by FPU sequencer via use_fs1)                                                                                                                                         
+          spatz_req.use_vs1   = 1'b1;
+
+          // FP scalar value (substituted upstream by FPU sequencer via use_fs1)
           spatz_req.rs2       = decoder_req_i.rs1;
-                                                                                                                                                                                                                         
+
           // VTL plumbing — scatter only (no gather of old vd since vd is write-only).
           // vd is NOT zeroed by this instruction; the kernel must issue
           // `vventclr` once per outer iteration to clear the ventaglio bank.
@@ -1342,8 +1350,7 @@ module spatz_decoder
         // (or middle) loop iteration to clear residue from the previous
         // accumulator group. Standalone op: no vd/vs operands; ventaglio
         // walks every bank cell and writes 0. Routed via ex_unit=SLD so it
-        // bypasses the VFU and retires through the (formerly-dead) vsldu_rsp
-        // wires that ventaglio now drives via vtl_rsp_o.
+        // bypasses the VFU and retires through ventaglio's vtl_rsp_o.
         riscv_instr::VVENTCLR: begin
           automatic logic [1:0] funct2 = decoder_req_i.instr[26:25];
 
@@ -1360,6 +1367,7 @@ module spatz_decoder
           spatz_req.op_vtl.use_vtl       = 1'b1;
           spatz_req.op_vtl.clear_buffer  = 1'b1;
         end
+`endif // VENTAGLIO
 
         // Move to the scalar FP RF
         riscv_instr::VFMV_F_S: begin

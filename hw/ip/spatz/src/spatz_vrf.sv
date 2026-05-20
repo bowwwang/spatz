@@ -20,14 +20,18 @@ module spatz_vrf
     input  vrf_data_t [NrWritePorts-1:0] wdata_i,
     input  logic      [NrWritePorts-1:0] we_i,
     input  vrf_be_t   [NrWritePorts-1:0] wbe_i,
-    input  logic      [NrWritePorts-1:0] vtl_redirect_write_i,
     output logic      [NrWritePorts-1:0] wvalid_o,
     // Read ports
     input  vrf_addr_t [NrReadPorts-1:0]  raddr_i,
     input  logic      [NrReadPorts-1:0]  re_i,
-    input  logic      [NrReadPorts-1:0]  vtl_redirect_read_i,
     output vrf_data_t [NrReadPorts-1:0]  rdata_o,
-    output logic      [NrReadPorts-1:0]  rvalid_o,
+    output logic      [NrReadPorts-1:0]  rvalid_o
+`ifdef VENTAGLIO
+    ,
+    // VTL redirect inputs: per-port flags that re-route a VRF access into
+    // the Ventaglio bank instead of a regular VRF bank.
+    input  logic      [NrWritePorts-1:0] vtl_redirect_write_i,
+    input  logic      [NrReadPorts-1:0]  vtl_redirect_read_i,
     // Write master ports to VTL
     output vrf_addr_t                    waddr_o,
     output vrf_data_t                    wdata_o,
@@ -41,6 +45,7 @@ module spatz_vrf
     input  vrf_data_t                    rdata_i,
     input  logic                         rvalid_i,
     output logic                         rgather_en_o
+`endif
   );
 
 `include "common_cells/registers.svh"
@@ -92,8 +97,11 @@ module spatz_vrf
   always_comb begin: gen_write_request
     for (int bank = 0; bank < NrVRFBanks; bank++) begin
       for (int port = 0; port < NrWritePorts; port++) begin
+`ifdef VENTAGLIO
         write_request[bank][port] = we_i[port] && f_bank(waddr_i[port]) == bank && (vtl_redirect_write_i[port] != 1'b1);
-
+`else
+        write_request[bank][port] = we_i[port] && f_bank(waddr_i[port]) == bank;
+`endif
       end
     end
   end: gen_write_request
@@ -105,6 +113,7 @@ module spatz_vrf
     wbe      = '0;
     wvalid_o = '0;
 
+`ifdef VENTAGLIO
     // signals for request VTL forwarding
     waddr_o = '0;
     wdata_o = '0;
@@ -112,7 +121,7 @@ module spatz_vrf
     wbe_o   = '0;
     wscatter_en_o = 1'b0;
 
-    // forward the write request to VTL 
+    // forward the write request to VTL
     // write requests from VFU has the highest priority
     // no write request from VTL will be forwarded
     if (vtl_redirect_write_i[VFU_VD_WD] == 1'b1) begin
@@ -130,6 +139,7 @@ module spatz_vrf
       wvalid_o[VLSU_VD_WD] = wvalid_i;
       wscatter_en_o  = 1'b0;
     end
+`endif
 
 
     // For each bank, we have a priority based access scheme. First priority always has the VFU,
@@ -166,7 +176,11 @@ module spatz_vrf
   always_comb begin: gen_read_request
     for (int bank = 0; bank < NrVRFBanks; bank++) begin
       for (int port = 0; port < NrReadPorts; port++) begin
+`ifdef VENTAGLIO
         read_request[bank][port] = re_i[port] && f_bank(raddr_i[port]) == bank && (vtl_redirect_read_i[port] != 1'b1);
+`else
+        read_request[bank][port] = re_i[port] && f_bank(raddr_i[port]) == bank;
+`endif
       end
     end
   end: gen_read_request
@@ -176,6 +190,7 @@ module spatz_vrf
     rvalid_o = '0;
     rdata_o  = 'x;
 
+`ifdef VENTAGLIO
     // signals for request VTL forwarding
     raddr_o  = '0;
     re_o     =  0;
@@ -214,6 +229,7 @@ module spatz_vrf
       rdata_o[VLSU_VS2_RD]  = rdata_i;
       rvalid_o[VLSU_VS2_RD] = rvalid_i;
     end
+`endif
 
 
     // For each port or each bank we have a priority based access scheme.

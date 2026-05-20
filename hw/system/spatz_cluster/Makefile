@@ -22,13 +22,23 @@ SPATZ_CLUSTER_CFG_DEFINES += -DSNRT_CLUSTER_OFFSET=$(shell python3 -c "import js
 SPATZ_CLUSTER_CFG_DEFINES += -DSNRT_TCDM_SIZE=$(shell python3 -c "import jstyleson; f = open('$(SPATZ_CLUSTER_CFG_PATH)'); print(jstyleson.load(f)['cluster']['tcdm']['size'] * 1024)")
 SPATZ_CLUSTER_CFG_DEFINES += -DSNRT_NFPU_PER_CORE=$(shell python3 -c "import jstyleson; f = open('$(SPATZ_CLUSTER_CFG_PATH)'); print(jstyleson.load(f)['cluster']['n_fpu'])")
 
+# Ventaglio (VTL) compile-time gate. OR'd across all cores: if ANY core has
+# `ventaglio: true` in the hjson, define VENTAGLIO so the RTL `ifdef
+# VENTAGLIO ... `endif blocks pull in the VTL integration. DEFS flows
+# into Bender for vsim / vcs / verilator alike.
+SPATZ_CLUSTER_VENTAGLIO := $(shell python3 -c "import jstyleson; f = open('$(SPATZ_CLUSTER_CFG_PATH)'); cores = jstyleson.load(f)['cluster']['cores']; print(1 if any(c.get('ventaglio', False) for c in cores) else 0)")
+ifeq ($(SPATZ_CLUSTER_VENTAGLIO),1)
+DEFS += --define VENTAGLIO
+endif
+
 # Include Makefrag
 include $(ROOT)/util/Makefrag
 
 # QuestaSim
-VSIM      = questa-2021.3-kgf vsim
-VLOG      = questa-2021.3-kgf vlog
-VSIM_HOME = /usr/pack/questa-2021.3-kgf/questasim
+QUESTA_VER = questa-2023.4-zr
+VSIM      = $(QUESTA_VER) vsim
+VLOG      = $(QUESTA_VER) vlog
+VSIM_HOME = /usr/pack/$(QUESTA_VER)/questasim
 
 VSIM_FLAGS += -t 1ps
 VSIM_FLAGS += -do "log -r /*; source ${SPATZ_CLUSTER_DIR}/script/vsim/wave.tcl; run -a"

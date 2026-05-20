@@ -96,6 +96,7 @@ module spatz import spatz_pkg::*; import rvv_pkg::*; import fpnew_pkg::*; #(
   logic       vsldu_rsp_valid;
   vsldu_rsp_t vsldu_rsp;
 
+`ifdef VENTAGLIO
   // VTL gets its own control-path handshakes to the controller. Sharing
   // the physical VRF port with VSLDU does not extend to admit/retire —
   // the controller has to know which unit took an op and which unit is
@@ -103,6 +104,7 @@ module spatz import spatz_pkg::*; import rvv_pkg::*; import fpnew_pkg::*; #(
   logic       vtl_req_ready;
   logic       vtl_rsp_valid;
   vsldu_rsp_t vtl_rsp;
+`endif
 
   /////////////////////
   //  FPU sequencer  //
@@ -198,7 +200,9 @@ module spatz import spatz_pkg::*; import rvv_pkg::*; import fpnew_pkg::*; #(
   logic      [NrWritePorts-1:0] vrf_we;
   vrf_be_t   [NrWritePorts-1:0] vrf_wbe;
   logic      [NrWritePorts-1:0] vrf_wvalid;
+`ifdef VENTAGLIO
   logic      [NrWritePorts-1:0] vrf_vtl_redirect_write;
+`endif
 
   // Per-port "this VRF write completes a full VRF word" mask used to gate
   // scoreboard chaining. For unit-stride writes (full-byte wbe) this is high
@@ -214,6 +218,7 @@ module spatz import spatz_pkg::*; import rvv_pkg::*; import fpnew_pkg::*; #(
   logic      [NrReadPorts-1:0]  vrf_re;
   vrf_data_t [NrReadPorts-1:0]  vrf_rdata;
   logic      [NrReadPorts-1:0]  vrf_rvalid;
+`ifdef VENTAGLIO
   logic      [NrReadPorts-1:0]  vrf_vtl_redirect_read;
 
   // Per-vreg "writer in flight" — sourced from controller, consumed by Ventaglio
@@ -233,6 +238,7 @@ module spatz import spatz_pkg::*; import rvv_pkg::*; import fpnew_pkg::*; #(
   vrf_data_t                    vrf_vtl_rdata;
   logic                         vrf_vtl_rvalid;
   logic                         vrf_vtl_rgather_en;
+`endif
 
   // Gate the scoreboard's "wrote_result" tick for the VLSU port on a
   // word-complete VRF write so the consumer can only chain in after a full
@@ -255,27 +261,29 @@ module spatz import spatz_pkg::*; import rvv_pkg::*; import fpnew_pkg::*; #(
     .we_i                 (vrf_we    ),
     .wbe_i                (vrf_wbe   ),
     .wvalid_o             (vrf_wvalid),
-    .vtl_redirect_write_i (vrf_vtl_redirect_write),
     // Read Ports
     .raddr_i              (vrf_raddr ),
     .re_i                 (vrf_re    ),
     .rdata_o              (vrf_rdata ),
-    .rvalid_o             (vrf_rvalid),
-    .vtl_redirect_read_i  (vrf_vtl_redirect_read),
-    // master ports to VTL
-    // write ports
+    .rvalid_o             (vrf_rvalid)
+`ifdef VENTAGLIO
+    ,
+    .vtl_redirect_write_i (vrf_vtl_redirect_write),
+    .vtl_redirect_read_i  (vrf_vtl_redirect_read ),
+    // master ports to VTL (write side)
     .waddr_o        (vrf_vtl_waddr),
     .wdata_o        (vrf_vtl_wdata),
     .we_o           (vrf_vtl_we),
     .wbe_o          (vrf_vtl_wbe),
     .wvalid_i       (vrf_vtl_wvalid),
     .wscatter_en_o  (vrf_vtl_wscatter_en),
-    // read ports
+    // master ports to VTL (read side)
     .raddr_o        (vrf_vtl_raddr),
     .re_o           (vrf_vtl_re),
     .rdata_i        (vrf_vtl_rdata),
     .rvalid_i       (vrf_vtl_rvalid),
     .rgather_en_o   (vrf_vtl_rgather_en)
+`endif
   );
 
   ////////////////
@@ -324,26 +332,33 @@ module spatz import spatz_pkg::*; import rvv_pkg::*; import fpnew_pkg::*; #(
     .vsldu_req_ready_i(vsldu_req_ready ),
     .vsldu_rsp_valid_i(vsldu_rsp_valid ),
     .vsldu_rsp_i      (vsldu_rsp       ),
+`ifdef VENTAGLIO
     // VTL (Ventaglio): separate admit/retire path
     .vtl_req_ready_i  (vtl_req_ready   ),
     .vtl_rsp_valid_i  (vtl_rsp_valid   ),
     .vtl_rsp_i        (vtl_rsp         ),
+`endif
     // Scoreboard check
     .sb_id_i          (sb_id           ),
     .sb_wrote_result_i(sb_wrote_result ),
     .sb_enable_i      ({sb_we, sb_re}  ),
-    .sb_enable_o      ({vrf_we, vrf_re}),
-    .sb_vtl_redirect_read_o  (vrf_vtl_redirect_read ), // bowwang: leverage the new op_vtl field
+    .sb_enable_o      ({vrf_we, vrf_re})
+`ifdef VENTAGLIO
+    ,
+    .sb_vtl_redirect_read_o  (vrf_vtl_redirect_read ),
     .sb_vtl_redirect_write_o (vrf_vtl_redirect_write),
     // Per-vreg "writer in flight" feed to Ventaglio's prefetch trigger.
-    .vreg_write_pending_o    (vreg_write_pending)
+    .vreg_write_pending_o    (vreg_write_pending    )
+`endif
   );
 
   /////////
   // VFU //
   /////////
 
+`ifdef VENTAGLIO
   logic vfu_vtl_req_ready;
+`endif
 
   spatz_vfu #(
     .FPUImplementation(FPUImplementation)
@@ -355,7 +370,9 @@ module spatz import spatz_pkg::*; import rvv_pkg::*; import fpnew_pkg::*; #(
     .spatz_req_i         (spatz_req                                            ),
     .spatz_req_valid_i   (spatz_req_valid                                      ),
     .spatz_req_ready_o   (vfu_req_ready                                        ),
+`ifdef VENTAGLIO
     .vfu_vtl_req_ready_o (vfu_vtl_req_ready                                    ),
+`endif
     // Response
     .vfu_rsp_valid_o  (vfu_rsp_valid                                           ),
     .vfu_rsp_ready_i  (vfu_rsp_ready                                           ),
@@ -415,8 +432,20 @@ module spatz import spatz_pkg::*; import rvv_pkg::*; import fpnew_pkg::*; #(
     .spatz_mem_str_finished_o(spatz_mem_str_finished                               )
   );
 
-  // VSLDU and VTL priority based VRF access scheme
-  // VTL has higher priority if enabled to make sure indices are fetched on time
+  /////////////////
+  // VSLDU + VTL //
+  /////////////////
+  //
+  // With Ventaglio compiled in (`ifdef VENTAGLIO), VSLDU and VTL share the
+  // physical VRF write/read slot (VSLDU_VD_WD / VSLDU_VS2_RD) through a
+  // priority mux (VTL wins). The two units have separate admit/retire
+  // handshakes to the controller (vsldu_* and vtl_*).
+  //
+  // Without Ventaglio, only VSLDU exists; it wires directly to the slot
+  // and the cluster is vanilla Spatz.
+
+`ifdef VENTAGLIO
+  // Per-unit master signals that feed the priority arbiter below.
   vrf_addr_t mst_vtl_waddr,  mst_vsldu_waddr;
   vrf_data_t mst_vtl_wdata,  mst_vsldu_wdata;
   logic      mst_vtl_we,     mst_vsldu_we;
@@ -438,17 +467,17 @@ module spatz import spatz_pkg::*; import rvv_pkg::*; import fpnew_pkg::*; #(
     mst_vtl_wvalid         = '0;
     mst_vsldu_wvalid       = '0;
     sb_id[SB_VSLDU_VD_WD]  = '0;
-    // VTL issues write requests
-    if (mst_vtl_we) begin 
+    // VTL issues write requests with priority
+    if (mst_vtl_we) begin
       vrf_waddr[VSLDU_VD_WD] = mst_vtl_waddr;
-      vrf_wdata[VSLDU_VD_WD] = mst_vtl_wdata; 
+      vrf_wdata[VSLDU_VD_WD] = mst_vtl_wdata;
       sb_we[VSLDU_VD_WD]     = 1'b1;
       vrf_wbe[VSLDU_VD_WD]   = mst_vtl_wbe;
       mst_vtl_wvalid         = vrf_wvalid[VSLDU_VD_WD];
       sb_id[SB_VSLDU_VD_WD]  = mst_vtl_wid;
     end else if (mst_vsldu_we) begin
       vrf_waddr[VSLDU_VD_WD] = mst_vsldu_waddr;
-      vrf_wdata[VSLDU_VD_WD] = mst_vsldu_wdata; 
+      vrf_wdata[VSLDU_VD_WD] = mst_vsldu_wdata;
       sb_we[VSLDU_VD_WD]     = 1'b1;
       vrf_wbe[VSLDU_VD_WD]   = mst_vsldu_wbe;
       mst_vsldu_wvalid       = vrf_wvalid[VSLDU_VD_WD];
@@ -478,10 +507,6 @@ module spatz import spatz_pkg::*; import rvv_pkg::*; import fpnew_pkg::*; #(
       sb_id[SB_VSLDU_VS2_RD]  = mst_vsldu_rid;
     end
   end
-
-  /////////
-  // VTL //
-  /////////
 
   ventaglio #(
     .NarrowDataWidth  (VRFWordWidth ),
@@ -521,7 +546,7 @@ module spatz import spatz_pkg::*; import rvv_pkg::*; import fpnew_pkg::*; #(
     .rdata_o          (vrf_vtl_rdata     ),
     .rvalid_o         (vrf_vtl_rvalid    ),
     .rgather_en_i     (vrf_vtl_rgather_en),
-    // master ports to VRF
+    // master ports to VRF (routed through the arbiter above)
     .vrf_waddr_o      (mst_vtl_waddr       ),
     .vrf_wdata_o      (mst_vtl_wdata       ),
     .vrf_we_o         (mst_vtl_we          ),
@@ -535,17 +560,6 @@ module spatz import spatz_pkg::*; import rvv_pkg::*; import fpnew_pkg::*; #(
     // Per-vreg "writer in flight" feed from controller for prefetch gating
     .vreg_write_pending_i (vreg_write_pending                         )
   );
-
-  ///////////
-  // VSLDU //
-  ///////////
-  //
-  // VSLDU shares the physical VRF write/read slot (VSLDU_VD_WD /
-  // VSLDU_VS2_RD) with VTL through a priority mux: VTL wins when both
-  // request. VSLDU sees wvalid/rvalid = 0 when blocked and re-issues
-  // next cycle (standard Spatz unit protocol). VSLDU's admit/retire
-  // handshakes (vsldu_req_ready, vsldu_rsp_valid, vsldu_rsp) are now
-  // distinct from VTL's so the controller can route ops correctly.
 
   spatz_vsldu i_vsldu (
     .clk_i            (clk_i                                          ),
@@ -569,6 +583,32 @@ module spatz import spatz_pkg::*; import rvv_pkg::*; import fpnew_pkg::*; #(
     .vrf_rvalid_i     (mst_vsldu_rvalid                               ),
     .vrf_id_o         ({mst_vsldu_wid, mst_vsldu_rid}                 )
   );
+
+`else // !VENTAGLIO — vanilla Spatz: VSLDU wires directly to its slot.
+
+  spatz_vsldu i_vsldu (
+    .clk_i            (clk_i                                          ),
+    .rst_ni           (rst_ni                                         ),
+    // Request
+    .spatz_req_i      (spatz_req                                      ),
+    .spatz_req_valid_i(spatz_req_valid                                ),
+    .spatz_req_ready_o(vsldu_req_ready                                ),
+    // Response
+    .vsldu_rsp_valid_o(vsldu_rsp_valid                                ),
+    .vsldu_rsp_o      (vsldu_rsp                                      ),
+    // VRF (direct connection to the VSLDU slot)
+    .vrf_waddr_o      (vrf_waddr[VSLDU_VD_WD]                         ),
+    .vrf_wdata_o      (vrf_wdata[VSLDU_VD_WD]                         ),
+    .vrf_we_o         (sb_we[VSLDU_VD_WD]                             ),
+    .vrf_wbe_o        (vrf_wbe[VSLDU_VD_WD]                           ),
+    .vrf_wvalid_i     (vrf_wvalid[VSLDU_VD_WD]                        ),
+    .vrf_raddr_o      (vrf_raddr[VSLDU_VS2_RD]                        ),
+    .vrf_re_o         (sb_re[VSLDU_VS2_RD]                            ),
+    .vrf_rdata_i      (vrf_rdata[VSLDU_VS2_RD]                        ),
+    .vrf_rvalid_i     (vrf_rvalid[VSLDU_VS2_RD]                       ),
+    .vrf_id_o         ({sb_id[SB_VSLDU_VD_WD], sb_id[SB_VSLDU_VS2_RD]})
+  );
+`endif // VENTAGLIO
 
   ////////////////
   // Assertions //

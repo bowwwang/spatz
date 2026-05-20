@@ -196,6 +196,8 @@ package spatz_pkg;
 
   typedef struct packed {
     sp_idxw_e  sp_cfg_index_width;
+    // TODO: planned for future sparse-format BLK_SIZE configurability;
+    // currently set from `csrwi 0x7c5` but not consumed by any datapath.
     sp_blk_e   sp_cfg_blk_size;
     sp_ratio_e sp_cfg_ratio;
   } sp_cfg_t;
@@ -203,18 +205,17 @@ package spatz_pkg;
   typedef struct packed {
     logic vm;
 
-    // general flag 
+    // general flag
     logic use_vtl; // if any operand go through VTL
     logic is_load_idx;
 
-    logic gather_vs1; // are these signal necessary?
-    logic gather_vs2;
     logic gather_vd;
 
     logic scatter_vd;
+    logic clear_buffer; // vventclr: zero the entire ventaglio bank
 
     vreg_t old_vd;
-    
+    vreg_t idx_vreg; // index vreg for vfxmacc.vrf
     sp_cfg_t sp_cfg;
 
 
