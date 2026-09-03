@@ -36,8 +36,15 @@
 #define VARIANT 1
 #endif
 
-#define D_LOG2 3 // log2(DICT_D); DICT_D=8 for the headline sweep
-#define BLK_SHIFT "5" // log2(D*4) as string for asm: 32-B blocks
+#if DICT_D == 4
+#define D_LOG2 2
+#define BLK_SHIFT "4" // log2(D*4): 16-B blocks (dictionary-decode class)
+#elif DICT_D == 8
+#define D_LOG2 3
+#define BLK_SHIFT "5" // log2(D*4): 32-B blocks (VQ-LLM class)
+#else
+#error "unsupported DICT_D"
+#endif
 #define TBL_WORDS (TBL_KB * 256)
 #define NBLK (TBL_WORDS / DICT_D)
 #define N_CODES 16384
@@ -93,7 +100,12 @@ static void vqdecode_vlxblk(uint32_t *o, const uint32_t *t,
 #endif
 // u16 codes -> per-element e16 byte offsets via widening-doubling expansion.
 // Ported verbatim from vq-date sp-dictdecode (verified 84/84 there); result
-// in v4..v7 (D_LOG2 even) or v24..v27 (odd). D=8 -> odd -> v24.
+// in v4..v7 (D_LOG2 even) or v24..v27 (odd) - selected by parity below.
+#if (D_LOG2 & 1)
+#define EXPANDED_IDX "v24"
+#else
+#define EXPANDED_IDX "v4"
+#endif
 static inline void expand_offsets_e16(const uint16_t *codes, size_t n_idx) {
   asm volatile("vsetvli zero, %[n], e16, m2, ta, ma\n"
                "vle16.v v4, (%[codes])\n"
@@ -140,7 +152,7 @@ static void vqdecode_rvv(uint32_t *o, const uint32_t *t, const uint16_t *c,
     const size_t n_idx = gvl >> D_LOG2;
     expand_offsets_e16(c, n_idx);
     asm volatile("vsetvli zero, %[g], e32, m8, ta, ma\n"
-                 "vluxei16.v v8, (%[dict]), v24\n" // D_LOG2=3 odd -> v24
+                 "vluxei16.v v8, (%[dict]), " EXPANDED_IDX "\n"
                  "vse32.v v8, (%[o0])\n"
                  :
                  : [g] "r"(gvl), [dict] "r"(t), [o0] "r"(o)
