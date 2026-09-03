@@ -165,6 +165,12 @@ set(SNITCH_TEST_PREFIX spatzBenchmarks-)
 # add_spatz_test_threeParam(sdotp-bp-fmatmul sdotp-bp-fmatmul/main.c 128 128 128)
 # add_spatz_test_threeParam(sdotp-bp-fmatmul sdotp-bp-fmatmul/main.c 128 256 128)
 
+# VLXBLK ISA suite through the benchmark harness (riscvTests glue lacks set_eoc)
+add_snitch_test(vlxblk-isa vlxblk-isa/main.c)
+target_link_libraries(test-${SNITCH_TEST_PREFIX}vlxblk-isa benchmark ${SNITCH_RUNTIME})
+target_compile_definitions(test-${SNITCH_TEST_PREFIX}vlxblk-isa PUBLIC PRINT_RESULT USE_CACHE=${USE_CACHE} PRINT_UART=${PRINT_UART})
+target_include_directories(test-${SNITCH_TEST_PREFIX}vlxblk-isa PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/../riscvTests/isa/macros/vector)
+
 add_spatz_test_oneParam(dp-faxpy dp-faxpy/main.c 256)
 add_spatz_test_oneParam(dp-faxpy dp-faxpy/main.c 1024)
 
