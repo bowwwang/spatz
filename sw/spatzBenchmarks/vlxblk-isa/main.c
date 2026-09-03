@@ -349,6 +349,61 @@ void TEST_CASE9(void) { run_tc8(9, 16); }
 void TEST_CASE10(void) { run_bg_case(10, 1); }
 #endif
 
+// GATE 2 (cache mode only): at-scale gathers with real cache behavior.
+// TC11: 256 KiB table (2.3x the 112 KiB cache) -> capacity evictions under
+//       checked block gathers. TC12: table base offset by 16 B so 32-B
+//       blocks straddle 64-B cache lines.
+#if USE_CACHE == 1
+#define G2_TBL_WORDS (65536)              // 256 KiB of e32
+#define G2_BLK 8                          // 32-B blocks
+#define G2_NBLK (G2_TBL_WORDS / G2_BLK)   // 8192 blocks
+#define G2_K 32                           // indices/gather: vl = 32*8 = 256 = vlmax(e32,m8)
+#define G2_CHUNKS 64
+static uint32_t g2_table[G2_TBL_WORDS + 16] __attribute__((section(".data"), aligned(128)));
+static uint8_t  g2_idx_bytes; // dummy to keep section grouping tight
+static uint16_t g2_idx[G2_K] __attribute__((section(".data")));
+static uint32_t g2_out[G2_K * G2_BLK] __attribute__((section(".data")));
+static uint32_t g2_gold[G2_K * G2_BLK] __attribute__((section(".data")));
+
+static void run_g2(unsigned int case_id, unsigned int base_off_bytes) {
+  uint32_t *tbl = (uint32_t *)((uint8_t *)g2_table + base_off_bytes);
+  register uint32_t bl_reg asm("t0") = G2_BLK;      // x5
+  register uint32_t *tbl_reg asm("t1") = tbl;       // x6
+  for (unsigned int i = 0; i < G2_TBL_WORDS; ++i)
+    tbl[i] = 0xC0000000u + i;
+  for (unsigned int c = 0; c < G2_CHUNKS; ++c) {
+    // pseudo-random block indices spanning the whole table
+    for (unsigned int k = 0; k < G2_K; ++k)
+      g2_idx[k] = (uint16_t)((k * 2654435761u + c * 40503u) % G2_NBLK);
+    for (unsigned int k = 0; k < G2_K; ++k)
+      for (unsigned int d = 0; d < G2_BLK; ++d)
+        g2_gold[k * G2_BLK + d] = tbl[(uint32_t)g2_idx[k] * G2_BLK + d];
+    asm volatile(VSETBLKLEN(5)
+                 "vsetvli zero, %[gr], e16, m2, ta, ma\n"
+                 "vle16.v v4, (%[i0])\n"
+                 "vsetvli zero, %[ec], e32, m8, ta, ma\n"
+                 VLXBLKEI16_V(8, 6, 4)
+                 "vse32.v v8, (%[o0])\n"
+                 :
+                 : [bl] "r"(bl_reg), [gr] "r"(G2_K), [ec] "r"(G2_K * G2_BLK),
+                   [i0] "r"(g2_idx), [dict] "r"(tbl_reg), [o0] "r"(g2_out)
+                 : "v4", "v5", "v8", "v9", "v10", "v11", "v12", "v13", "v14",
+                   "v15", "memory");
+    for (unsigned int i = 0; i < G2_K * G2_BLK; ++i)
+      if (g2_out[i] != g2_gold[i]) {
+        printf("[TC %d] chunk %d Index %d FAILED. Got %u, expected %u.\n",
+               case_id, c, i, g2_out[i], g2_gold[i]);
+        num_failed++;
+        return;
+      }
+  }
+  printf("PASSED.\n");
+}
+
+void TEST_CASE11(void) { run_g2(11, 0); }   // aligned: evictions at scale
+void TEST_CASE12(void) { run_g2(12, 16); }  // blocks straddle 64-B lines
+#endif
+
 // Benchmark-harness wrapper: ennest's riscvTests runtime glue never calls
 // set_eoc(), so the whole rv64uv suite hangs the testbench on this branch
 // (their own vadd does too). This target runs the identical VLXBLK test
@@ -383,6 +438,10 @@ int main(void) {
     TEST_CASE9();
 #if ELEN == 32
     TEST_CASE10(); // blk_len=1 (one port word on 32-bit datapaths)
+#endif
+#if USE_CACHE == 1
+    TEST_CASE11(); // 256 KiB table: capacity evictions
+    TEST_CASE12(); // line-straddling blocks
 #endif
 
     if (num_failed > 0)
