@@ -141,6 +141,8 @@ package spatz_pkg;
     VLXBLK,
     // Store instructions
     VSE, VSSE, VSXE,
+    // VLXBLK indexed block store
+    VSXBLK,
     // Config instruction
     VCFG,
     // MXU Config instruction

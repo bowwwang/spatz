@@ -343,6 +343,37 @@ module spatz_decoder
           spatz_req.vtype.vsew = decoder_req_i.vtype.vsew;
         end
 
+        riscv_instr::VSXBLKEI8_V,
+        riscv_instr::VSXBLKEI16_V: begin
+          automatic vreg_t blk_vs3        = decoder_req_i.instr[11:7];
+          automatic vreg_t blk_vs2        = decoder_req_i.instr[24:20];
+          automatic logic [2:0] blk_width = decoder_req_i.instr[14:12];
+
+          spatz_req.op             = VSXBLK;
+          spatz_req.ex_unit        = LSU;
+          spatz_req.op_mem.is_load = 1'b0;
+
+          spatz_req.vd             = blk_vs3; // store-data register
+          spatz_req.use_vd         = 1'b1;
+          spatz_req.vd_is_src      = 1'b1;
+
+          spatz_req.rs1            = decoder_req_i.rs1;
+
+          spatz_req.vs2            = blk_vs2;
+          spatz_req.use_vs2        = 1'b1;
+
+          // The custom encoding has no vm field. Treat as unmasked.
+          spatz_req.op_mem.vm      = 1'b1;
+
+          unique case (blk_width)
+            3'b000: spatz_req.op_mem.ew = EW_8;
+            3'b101: spatz_req.op_mem.ew = EW_16;
+            default: illegal_instr = 1'b1;
+          endcase
+
+          spatz_req.vtype.vsew = decoder_req_i.vtype.vsew;
+        end
+
         riscv_instr::VSETBLKLEN: begin
           spatz_req.op      = VSETBLKLEN;
           spatz_req.ex_unit = CON;

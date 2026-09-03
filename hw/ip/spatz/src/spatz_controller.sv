@@ -485,7 +485,7 @@ module spatz_controller
             spatz_req.tile_K = tilek_q;
           end
 `ifdef ENABLE_VLXBLK
-          if (spatz_req.op == VLXBLK)
+          if (spatz_req.op == VLXBLK || spatz_req.op == VSXBLK)
             spatz_req.op_mem.blk_log2 = blk_log2_q;
 `endif
         end

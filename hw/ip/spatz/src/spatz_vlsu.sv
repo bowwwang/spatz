@@ -163,7 +163,8 @@ module spatz_vlsu
   // VLXBLK indexed block load (one index per block of 2**blk_log2 elements)
   logic mem_is_indexed_blk;
 `ifdef ENABLE_VLXBLK
-  assign mem_is_indexed_blk = mem_spatz_req_valid && (mem_spatz_req.op == VLXBLK);
+  assign mem_is_indexed_blk = mem_spatz_req_valid &&
+                              ((mem_spatz_req.op == VLXBLK) || (mem_spatz_req.op == VSXBLK));
 `else
   assign mem_is_indexed_blk = 1'b0;
 `endif
@@ -847,7 +848,7 @@ module spatz_vlsu
       // UPSTREAM FIX: per-FU port state (array==scalar compares ALL ports and
       // stalls partial-port loads whenever any port is parked in store mode).
       commit_counter_en[fu]      = commit_operation_valid[fu] && (commit_insn_q.is_load && vrf_req_valid_d && vrf_req_ready_d) && (port_state_q[fu] == VLSU_RunningLoad)||
-                                   (!commit_insn_q.is_load && vrf_rvalid_i[0] && vrf_re_o[0] && (!mem_is_indexed || vrf_rvalid_i[1]));
+                                   (!commit_insn_q.is_load && vrf_rvalid_i[0] && vrf_re_o[0] && (!mem_is_indexed_any || vrf_rvalid_i[1]));
       commit_counter_max[fu]     = max_elements;
     end
   end
@@ -1134,7 +1135,7 @@ module spatz_vlsu
         for (int unsigned port = 0; port < NrMemPorts; port++) begin
           rob_wdata[port]  = vrf_rdata_i[0][ELEN*port +: ELEN];
           rob_wid[port]    = rob_id[port];
-          rob_req_id[port] = vrf_rvalid_i[0] && (!mem_is_indexed || vrf_rvalid_i[1]);
+          rob_req_id[port] = vrf_rvalid_i[0] && (!mem_is_indexed_any || vrf_rvalid_i[1]);
           rob_push[port]   = rob_req_id[port];
         end
       end
@@ -1185,7 +1186,7 @@ module spatz_vlsu
               default: mem_req_data[port] = data;
             endcase
 
-          mem_req_svalid[port] = rob_rvalid[port] && (!mem_is_indexed || (vrf_rvalid_i[1] && !pending_index[port])) && !mem_spatz_req.op_mem.is_load;
+          mem_req_svalid[port] = rob_rvalid[port] && (!mem_is_indexed_any || (vrf_rvalid_i[1] && !pending_index[port])) && !mem_spatz_req.op_mem.is_load;
           mem_req_id[port]     = rob_rid[port];
           mem_req_last[port]   = mem_operation_last[port];
           rob_pop[port]        = spatz_mem_req_valid[port] && spatz_mem_req_ready[port];

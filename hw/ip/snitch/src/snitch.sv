@@ -2282,6 +2282,20 @@ module snitch import snitch_pkg::*; import riscv_instr::*; #(
       end
       // 2 source registers (rs1, rs2) and one destination register (rd)
 `ifdef ENABLE_VLXBLK
+      // VLXBLK indexed block store: offload like the other vector stores
+      riscv_instr::VSXBLKEI8_V,
+      riscv_instr::VSXBLKEI16_V: begin
+        if (RVV) begin
+          write_rd        = 1'b0;
+          uses_rd         = 1'b0;
+          acc_qvalid_o    = valid_instr && !acc_mem_stall;
+          opa_select      = Reg;
+          acc_register_rd = 1'b0;
+          acc_mem_store   = 1'b1;
+        end else begin
+          illegal_inst = 1'b1;
+        end
+      end
       // VLXBLK block-length configuration: 1 source register (rs1), no rd
       riscv_instr::VSETBLKLEN: begin
         if (RVV) begin

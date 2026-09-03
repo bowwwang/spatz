@@ -607,7 +607,11 @@ module spatz_fpu_sequencer
     riscv_instr::VSUXEI8_V, riscv_instr::VSUXEI16_V, riscv_instr::VSUXEI32_V, riscv_instr::VSUXEI64_V,
     riscv_instr::MSE8_V_A, riscv_instr::MSE8_V_B, riscv_instr::MSE8_V_C, riscv_instr::MSE16_V_A,
     riscv_instr::MSE16_V_B, riscv_instr::MSE16_V_C, riscv_instr::MSE32_V_A, riscv_instr::MSE32_V_B,
-    riscv_instr::MSE32_V_C, riscv_instr::MSE64_V_A, riscv_instr::MSE64_V_B, riscv_instr::MSE64_V_C};
+    riscv_instr::MSE32_V_C, riscv_instr::MSE64_V_A, riscv_instr::MSE64_V_B, riscv_instr::MSE64_V_C
+`ifdef ENABLE_VLXBLK
+    , riscv_instr::VSXBLKEI8_V, riscv_instr::VSXBLKEI16_V
+`endif
+    };
 
   // Do we need to delay is load/store because of the VLSU?
   assign vlsu_stall = (is_store && acc_mem_cnt_q != '0) || (is_load && acc_mem_str_cnt_q != '0) || acc_mem_cnt_q == '1;

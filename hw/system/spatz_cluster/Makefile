@@ -133,7 +133,7 @@ $(CURDIR)/src/generated/bootrom.sv: test/bootrom.bin
 
 .PHONY: generate
 generate: src/generated/spatz_cluster_wrapper.sv
-src/generated/spatz_cluster_wrapper.sv: ${SPATZ_CLUSTER_CFG} $(find src/tpl) $(find test/*tpl)
+src/generated/spatz_cluster_wrapper.sv: ${SPATZ_CLUSTER_CFG} $(find src/tpl) $(find test/*tpl) $(SPATZ_DIR)/hw/ip/spatz/src/spatz_pkg.sv.tpl
 	${PYTHON} ${SPATZ_DIR}/util/clustergen.py -c ${SPATZ_CLUSTER_CFG} -o src/
 
 .PHONY: cache-init
