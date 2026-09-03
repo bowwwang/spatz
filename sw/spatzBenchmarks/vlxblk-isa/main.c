@@ -38,6 +38,7 @@
   ".word ((" #f7 ")<<25)|((" #vs2 ")<<20)|((" #rs1n ")<<15)|((" #f3 ")<<12)|((" #vd ")<<7)|0x2B\n"
 #define VLXBLKEI8_V(vd, rs1n, vs2)  VLXBLK_WORD(0x0C, 0x0, vd, rs1n, vs2)
 #define VLXBLKEI16_V(vd, rs1n, vs2) VLXBLK_WORD(0x0C, 0x5, vd, rs1n, vs2)
+#define VSXBLKEI16_V(vs3, rs1n, vs2) VLXBLK_WORD(0x0D, 0x5, vs3, rs1n, vs2)
 #define VSETBLKLEN(rs1n)            VLXBLK_WORD(0x0F, 0x0, 0, rs1n, 0)
 
 #include <stdint.h>
@@ -404,6 +405,78 @@ void TEST_CASE11(void) { run_g2(11, 0); }   // aligned: evictions at scale
 void TEST_CASE12(void) { run_g2(12, 16); }  // blocks straddle 64-B lines
 #endif
 
+// TC13/TC14: indexed block STORE (vsxblk) - the DB radix-partitioning
+// pattern (Polychroniou et al., SIGMOD'15): fixed-size records scattered
+// to unique (permutation) slots. TC13 = scatter + CPU-verified memory
+// image. TC14 = scatter/gather interleave at scale: blocks written by
+// vsxblk are immediately gathered back by vlxblk through the same
+// memory, stressing the store->load port transitions.
+#define SC_BLK 8   // 32-B records
+#define SC_NBLK 64 // x 64 records = 2 KiB region (fits SPM and cache modes)
+static uint32_t sc_src[SC_BLK * SC_NBLK] __attribute__((section(".data"), aligned(128)));
+static uint32_t sc_dst[SC_BLK * SC_NBLK] __attribute__((section(".data"), aligned(128)));
+static uint32_t sc_rb[SC_BLK * SC_NBLK] __attribute__((section(".data"), aligned(128)));
+static uint16_t sc_idx[SC_NBLK] __attribute__((section(".data")));
+
+static void run_sc(unsigned int case_id, unsigned int interleave) {
+  register uint32_t bl_reg asm("t0") = SC_BLK;   // x5
+  register uint32_t *dst_reg asm("t1") = sc_dst; // x6
+  for (unsigned int k = 0; k < SC_NBLK; ++k)
+    sc_idx[k] = (uint16_t)((k * 13 + 7) % SC_NBLK); // permutation (13 coprime 64)
+  for (unsigned int i = 0; i < SC_BLK * SC_NBLK; ++i) {
+    sc_src[i] = 0xD0000000u + (case_id << 20) + i;
+    sc_dst[i] = 0;
+    sc_rb[i]  = 0;
+  }
+  asm volatile(VSETBLKLEN(5) :: "r"(bl_reg), "r"(dst_reg));
+  for (unsigned int b = 0; b < SC_NBLK; b += 32) { // 32 blocks = 256 elem = vlmax
+    if (!interleave)
+      asm volatile("vsetvli zero, %[gr], e16, m1, ta, ma\n"
+                   "vle16.v v2, (%[i0])\n"
+                   "vsetvli zero, %[ec], e32, m8, ta, ma\n"
+                   "vle32.v v8, (%[s0])\n"
+                   VSXBLKEI16_V(8, 6, 2)
+                   :
+                   : [gr] "r"(32u), [ec] "r"(256u), [i0] "r"(sc_idx + b),
+                     [s0] "r"(sc_src + b * SC_BLK), [dst] "r"(dst_reg)
+                   : "v2", "v8", "v9", "v10", "v11", "v12", "v13", "v14",
+                     "v15", "memory");
+    else
+      asm volatile("vsetvli zero, %[gr], e16, m1, ta, ma\n"
+                   "vle16.v v2, (%[i0])\n"
+                   "vsetvli zero, %[ec], e32, m8, ta, ma\n"
+                   "vle32.v v8, (%[s0])\n"
+                   VSXBLKEI16_V(8, 6, 2)
+                   VLXBLKEI16_V(16, 6, 2)
+                   "vse32.v v16, (%[r0])\n"
+                   :
+                   : [gr] "r"(32u), [ec] "r"(256u), [i0] "r"(sc_idx + b),
+                     [s0] "r"(sc_src + b * SC_BLK), [r0] "r"(sc_rb + b * SC_BLK),
+                     [dst] "r"(dst_reg)
+                   : "v2", "v8", "v9", "v10", "v11", "v12", "v13", "v14",
+                     "v15", "v16", "v17", "v18", "v19", "v20", "v21", "v22",
+                     "v23", "memory");
+  }
+  // golden: dst[idx[k]*B + d] == src[k*B + d]; interleave: rb == src
+  for (unsigned int k = 0; k < SC_NBLK; ++k)
+    for (unsigned int d = 0; d < SC_BLK; ++d) {
+      if (sc_dst[(uint32_t)sc_idx[k] * SC_BLK + d] != sc_src[k * SC_BLK + d]) {
+        printf("[TC %d] block %d elem %d FAILED (scatter image).\n", case_id, k, d);
+        num_failed++;
+        return;
+      }
+      if (interleave && sc_rb[k * SC_BLK + d] != sc_src[k * SC_BLK + d]) {
+        printf("[TC %d] block %d elem %d FAILED (gather-back).\n", case_id, k, d);
+        num_failed++;
+        return;
+      }
+    }
+  printf("PASSED.\n");
+}
+
+void TEST_CASE13(void) { run_sc(13, 0); }
+void TEST_CASE14(void) { run_sc(14, 1); }
+
 // Benchmark-harness wrapper: ennest's riscvTests runtime glue never calls
 // set_eoc(), so the whole rv64uv suite hangs the testbench on this branch
 // (their own vadd does too). This target runs the identical VLXBLK test
@@ -443,6 +516,8 @@ int main(void) {
     TEST_CASE11(); // 256 KiB table: capacity evictions
     TEST_CASE12(); // line-straddling blocks
 #endif
+    TEST_CASE13(); // vsxblk: block scatter, permutation slots
+    TEST_CASE14(); // vsxblk/vlxblk interleave with gather-back check
 
     if (num_failed > 0)
       printf("ERROR: vlxblk-isa failed %d tests!\n", num_failed);
