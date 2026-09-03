@@ -844,7 +844,9 @@ module spatz_vlsu
       commit_operation_valid[fu] = commit_insn_valid && (commit_counter_q[fu] != max_elements) && (catchup[fu] || (!catchup[fu] && ~|catchup));
       commit_operation_last[fu]  = commit_operation_valid[fu] && ((max_elements - commit_counter_q[fu]) <= (commit_is_single_element_operation ? commit_single_element_size : ELENB));
       commit_counter_delta[fu]   = !commit_operation_valid[fu] ? vlen_t'('d0) : commit_is_single_element_operation ? vlen_t'(commit_single_element_size) : commit_operation_last[fu] ? (max_elements - commit_counter_q[fu]) : vlen_t'(ELENB);
-      commit_counter_en[fu]      = commit_operation_valid[fu] && (commit_insn_q.is_load && vrf_req_valid_d && vrf_req_ready_d) && (port_state_q == VLSU_RunningLoad)||
+      // UPSTREAM FIX: per-FU port state (array==scalar compares ALL ports and
+      // stalls partial-port loads whenever any port is parked in store mode).
+      commit_counter_en[fu]      = commit_operation_valid[fu] && (commit_insn_q.is_load && vrf_req_valid_d && vrf_req_ready_d) && (port_state_q[fu] == VLSU_RunningLoad)||
                                    (!commit_insn_q.is_load && vrf_rvalid_i[0] && vrf_re_o[0] && (!mem_is_indexed || vrf_rvalid_i[1]));
       commit_counter_max[fu]     = max_elements;
     end
@@ -1033,7 +1035,10 @@ module spatz_vlsu
         // BITWISE per-port (vq-date lineage: rob_rvalid | ~mem_pending). With
         // logical && it collapses to a scalar and any load shorter than
         // NrMemPorts*ELENB bytes deadlocks its writeback (e.g. a 4-byte vle8).
-        vrf_req_valid_d = &(rob_rvalid | (~mem_pending && port_state_load)) && |mem_pending;
+        // A port contributes data (rob_rvalid) or provably has nothing to
+        // deliver: no pending beats AND (in load mode OR an empty ROB - a
+        // port parked in store mode with a drained ROB cannot race).
+        vrf_req_valid_d = &(rob_rvalid | (~mem_pending & (port_state_load | rob_empty))) && |mem_pending;
 
         for (int unsigned port = 0; port < NrMemPorts; port++) begin
           automatic logic [63:0] data = rob_rdata[port];
