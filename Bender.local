@@ -4,3 +4,10 @@
 
 overrides:
   axi: { git: "https://github.com/pulp-platform/axi.git", version: 0.39.1-beta }
+  # Phase-0 local fix: idma 0.6.3 requires register_interface ^0.4.3, conflicting
+  # with spatz (^0.3.8) and insitu-cache (^0.3.6). idma 0.6.5 relaxed this back
+  # to ^0.3 (known-good pairing: vq-date tree, idma 0.6.5 + reg_intf 0.3.9).
+  idma: { git: "https://github.com/pulp-platform/iDMA.git", version: 0.6.5 }
+  # reg_intf pinned to the exact rev the vq-date tree builds with; overrides
+  # silence the ^0.4.3 (idma) vs ^0.3.x (spatz, insitu-cache) conflict.
+  register_interface: { git: "https://github.com/pulp-platform/register_interface.git", rev: 146501d80052b61475cdc333d3aab4cd769fd5dc }
