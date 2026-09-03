@@ -160,6 +160,17 @@ module spatz_vlsu
   logic mem_is_indexed;
   assign mem_is_indexed = (mem_spatz_req.op == VLXE) || (mem_spatz_req.op == VSXE);
 
+  // VLXBLK indexed block load (one index per block of 2**blk_log2 elements)
+  logic mem_is_indexed_blk;
+`ifdef ENABLE_VLXBLK
+  assign mem_is_indexed_blk = mem_spatz_req_valid && (mem_spatz_req.op == VLXBLK);
+`else
+  assign mem_is_indexed_blk = 1'b0;
+`endif
+  // Any operation that consumes an index vector on vrf read port 1
+  logic mem_is_indexed_any;
+  assign mem_is_indexed_any = mem_is_indexed || mem_is_indexed_blk;
+
   /////////////
   //  State  //
   /////////////
@@ -401,6 +412,7 @@ module spatz_vlsu
     logic is_load;
     logic is_strided;
     logic is_indexed;
+    logic is_indexed_blk;
   } commit_metadata_t;
 
   commit_metadata_t commit_insn_d;
@@ -438,7 +450,8 @@ module spatz_vlsu
       rs1       : mem_spatz_req.rs1[2:0],
       is_load   : mem_spatz_req.op_mem.is_load,
       is_strided: mem_is_strided,
-      is_indexed: mem_is_indexed
+      is_indexed: mem_is_indexed,
+      is_indexed_blk: mem_is_indexed_blk
   };
 
   always_comb begin: queue_control
@@ -539,9 +552,61 @@ module spatz_vlsu
     maxew_t idx_offset;
     assign idx_offset = mem_idx_counter_q[port];
 
+`ifdef ENABLE_VLXBLK
+    // Indexed block load (VLXBLK): one index per block of 2**blk_log2
+    // elements. All block arithmetic is shift/mask (power-of-two block
+    // lengths only, normalized in the controller) - no divider/multiplier.
+    logic [3:0]  blk_log2;
+    vlen_t       data_byte_idx;
+    vlen_t       data_elem_idx;
+    vlen_t       blk_idx;
+    vlen_t       blk_elem_off;
+    vlen_t       blk_idx_gbyte;
+    logic [31:0] blk_index_value;
+
+    always_comb begin : gen_blk_idx
+      blk_log2      = '0;
+      data_byte_idx = '0;
+      data_elem_idx = '0;
+      blk_idx       = '0;
+      blk_elem_off  = '0;
+      if (mem_is_indexed_blk) begin
+        blk_log2 = mem_spatz_req.op_mem.blk_log2;
+        // Global byte position of this port's current data beat
+        data_byte_idx = {mem_counter_q[port][$bits(vlen_t)-1:MAXEW] << $clog2(NrMemPorts),
+                         mem_counter_q[port][int'(MAXEW)-1:0]} + (port << MAXEW);
+        data_elem_idx = data_byte_idx >> mem_spatz_req.vtype.vsew;
+        blk_idx       = data_elem_idx >> blk_log2;
+        blk_elem_off  = data_elem_idx & ((vlen_t'(1) << blk_log2) - 1);
+      end
+    end
+
+    // For block loads the port's next index is index #blk_idx of the index
+    // vector: a pure function of the data counter (indices are shared across
+    // ports, one per block), unlike regular indexed ops whose index stream
+    // is port-interleaved and tracked by mem_idx_counter.
+    assign blk_idx_gbyte = vlen_t'(blk_idx << mem_spatz_req.op_mem.ew);
+`endif
+
     always_comb begin
       stride = mem_is_strided ? mem_spatz_req.rs2 >> mem_spatz_req.vtype.vsew : 'd1;
 
+`ifdef ENABLE_VLXBLK
+      blk_index_value = '0;
+      if (mem_is_indexed_blk) begin
+        // Block-granular gather: the (zero-extended) index selects the
+        // block, scaled by the block byte size, plus the element offset
+        // within the block.
+        automatic logic [idx_width(N_FU*ELENB)-1:0] blk_word_index = blk_idx_gbyte[idx_width(N_FU*ELENB)-1:0];
+        unique case (mem_spatz_req.op_mem.ew)
+          EW_8 : blk_index_value = {24'b0, vrf_rdata_i[1][8 * blk_word_index +: 8]};
+          EW_16: blk_index_value = {16'b0, vrf_rdata_i[1][8 * blk_word_index +: 16]};
+          default: blk_index_value = vrf_rdata_i[1][8 * blk_word_index +: 32];
+        endcase
+        offset = (blk_index_value << (blk_log2 + mem_spatz_req.vtype.vsew))
+               + (blk_elem_off << mem_spatz_req.vtype.vsew);
+      end else
+`endif
       if (mem_is_indexed) begin
         // What is the relationship between data and index width?
         automatic logic [1:0] data_index_width_diff = int'(mem_spatz_req.vtype.vsew) - int'(mem_spatz_req.op_mem.ew);
@@ -576,6 +641,14 @@ module spatz_vlsu
       mx_offset_addr_d[port]    = offset;
 
       pending_index[port] = (mem_idx_counter_q[port][$clog2(NrWordsPerVector*ELENB)-1:0] >> MAXEW) != vs2_vreg_addr[$clog2(NrWordsPerVector)-1:0];
+`ifdef ENABLE_VLXBLK
+      // For block loads the needed index-vector word is a pure function of
+      // the data counter: stall the port whenever that word is not the one
+      // currently addressed on vrf read port 1 (full-width compare against
+      // the monotonic word pointer - no modulo aliasing).
+      if (mem_is_indexed_blk)
+        pending_index[port] = vreg_elem_t'(blk_idx_gbyte >> $clog2(N_FU*ELENB)) != vs2_elem_id_q;
+`endif
     end
   end: gen_mem_req_addr
 
@@ -932,10 +1005,19 @@ module spatz_vlsu
     vrf_req_d.rsp_valid = commit_insn_valid && &commit_finished_d && mem_insn_finished_d[commit_insn_q.id];
 
     // Request indexes
-    vrf_re_o[1] = mem_is_indexed;
+    vrf_re_o[1] = mem_is_indexed_any;
 
     // Count which vs2 element we should load (indexed loads)
     vs2_elem_id_d = vs2_elem_id_q;
+`ifdef ENABLE_VLXBLK
+    // Block loads: advance the shared index-word pointer only when every
+    // port that still has data beats needs a later word, and at least one
+    // port is still active (finished ports do not block or force advance).
+    if (mem_is_indexed_blk) begin
+      if (|mem_operation_valid && &(pending_index | ~mem_operation_valid))
+        vs2_elem_id_d = vs2_elem_id_q + 1;
+    end else
+`endif
     if (&(pending_index ^ ~mem_operation_valid) && mem_is_indexed)
       vs2_elem_id_d = vs2_elem_id_q + 1;
     if (mem_spatz_req_ready)
@@ -947,6 +1029,10 @@ module spatz_vlsu
         // Enable write back to the VRF if we have a valid element in all buffers that still have to write something back.
         vrf_req_d.waddr = vd_vreg_addr;
         // Here, we do not enable the writing to ROB unless all ports are in loading mode (avoid racing in ports)
+        // UPSTREAM FIX: the rescue term for ports with no pending beats must be
+        // BITWISE per-port (vq-date lineage: rob_rvalid | ~mem_pending). With
+        // logical && it collapses to a scalar and any load shorter than
+        // NrMemPorts*ELENB bytes deadlocks its writeback (e.g. a 4-byte vle8).
         vrf_req_valid_d = &(rob_rvalid | (~mem_pending && port_state_load)) && |mem_pending;
 
         for (int unsigned port = 0; port < NrMemPorts; port++) begin
@@ -977,7 +1063,7 @@ module spatz_vlsu
           load_flag[port] = 1'b1;
 
           // Shift data to correct position if we have a strided memory access
-          if (commit_insn_q.is_strided || commit_insn_q.is_indexed)
+          if (commit_insn_q.is_strided || commit_insn_q.is_indexed || commit_insn_q.is_indexed_blk)
             if (MAXEW == EW_32)
               unique case (commit_counter_q[port][1:0])
                 2'b01: data   = {data[23:0], data[31:24]};
@@ -1029,7 +1115,7 @@ module spatz_vlsu
 `endif
         if (!rob_full[port] && !offset_queue_full[port] && mem_operation_valid[port]) begin
           rob_req_id[port]     = spatz_mem_req_ready[port] & spatz_mem_req_valid[port];
-          mem_req_lvalid[port] = (!mem_is_indexed || (vrf_rvalid_i[1] && !pending_index[port])) && mem_spatz_req.op_mem.is_load;
+          mem_req_lvalid[port] = (!mem_is_indexed_any || (vrf_rvalid_i[1] && !pending_index[port])) && mem_spatz_req.op_mem.is_load;
           mem_req_id[port]     = rob_id[port];
           mem_req_last[port]   = mem_operation_last[port];
         end

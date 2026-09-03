@@ -92,6 +92,12 @@ module spatz_controller
   `FF(tilen_q, tilen_d, '0)
   `FF(tilek_q, tilek_d, '0)
 
+`ifdef ENABLE_VLXBLK
+  // VLXBLK block-length state (log2, power-of-two block lengths only)
+  logic [3:0] blk_log2_d, blk_log2_q;
+  `FF(blk_log2_q, blk_log2_d, 4'd3)  // reset block length: 8 elements
+`endif
+
   always_comb begin : proc_vcsr
     automatic logic [$clog2(MAXVL):0] vlmax = 0;
 
@@ -102,6 +108,9 @@ module spatz_controller
     tilem_d  = tilem_q;
     tilen_d  = tilen_q;
     tilek_d  = tilek_q;
+`ifdef ENABLE_VLXBLK
+    blk_log2_d = blk_log2_q;
+`endif
 
     if (spatz_req_valid) begin
       // Reset vstart to zero if we have a new non CSR operation
@@ -164,6 +173,18 @@ module spatz_controller
         tilen_d = spatz_req.op_cfg.dimTile == DIM_N ? spatz_req.rs1 : tilen_q;
         tilek_d = spatz_req.op_cfg.dimTile == DIM_K ? spatz_req.rs1 : tilek_q;
       end
+
+`ifdef ENABLE_VLXBLK
+      if (spatz_req.op == VSETBLKLEN) begin
+        // The block length must be a power of two; normalize to
+        // floor(log2(rs1)) so the VLSU address path stays shift/mask only
+        // (rs1 == 0 behaves as block length 1).
+        blk_log2_d = '0;
+        for (int unsigned b = 0; b < $bits(vlen_t); b++)
+          if (spatz_req.rs1[b])
+            blk_log2_d = 4'(b);
+      end
+`endif
     end // spatz_req_valid
   end
 
@@ -463,6 +484,10 @@ module spatz_controller
             spatz_req.tile_N = tilen_q;
             spatz_req.tile_K = tilek_q;
           end
+`ifdef ENABLE_VLXBLK
+          if (spatz_req.op == VLXBLK)
+            spatz_req.op_mem.blk_log2 = blk_log2_q;
+`endif
         end
 
         SLD: begin

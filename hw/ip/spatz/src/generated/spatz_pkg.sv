@@ -137,12 +137,16 @@ package spatz_pkg;
     VSLIDEUP, VSLIDEDOWN,
     // Load instructions
     VLE, VLSE, VLXE,
+    // VLXBLK indexed block load
+    VLXBLK,
     // Store instructions
     VSE, VSSE, VSXE,
     // Config instruction
     VCFG,
     // MXU Config instruction
     MCFG,
+    // VLXBLK config instruction (set block length)
+    VSETBLKLEN,
     // VCSR
     VCSR,
     // Floating point instructions
@@ -205,6 +209,9 @@ package spatz_pkg;
     logic vm;
     logic is_load;
     vew_e ew;
+    // VLXBLK: log2 of the block length in elements (block length is
+    // constrained to a power of two; normalized in the controller)
+    logic [3:0] blk_log2;
   } op_mem_t;
 
   typedef struct packed {
