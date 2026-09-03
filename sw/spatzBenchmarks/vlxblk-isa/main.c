@@ -48,7 +48,7 @@
 #define MAX_ELEMS (MAX_BLOCK_LEN * MAX_GROUPS)
 #define NUM_CODEBOOK_BLOCKS 4
 
-static const uint16_t __attribute__((aligned(128))) codebook_init[NUM_CODEBOOK_BLOCKS * MAX_BLOCK_LEN] = {
+static uint16_t __attribute__((section(".data"), aligned(128))) codebook_init[NUM_CODEBOOK_BLOCKS * MAX_BLOCK_LEN] = {
     0x0100, 0x0101, 0x0102, 0x0103, 0x0104, 0x0105, 0x0106, 0x0107,
     0x0108, 0x0109, 0x010a, 0x010b, 0x010c, 0x010d, 0x010e, 0x010f,
     0x0200, 0x0201, 0x0202, 0x0203, 0x0204, 0x0205, 0x0206, 0x0207,
@@ -59,10 +59,10 @@ static const uint16_t __attribute__((aligned(128))) codebook_init[NUM_CODEBOOK_B
     0x0408, 0x0409, 0x040a, 0x040b, 0x040c, 0x040d, 0x040e, 0x040f,
 };
 
-static const uint8_t indices_init[MAX_GROUPS] = {2, 0, 3, 1};
+static uint8_t __attribute__((section(".data"))) indices_init[MAX_GROUPS] = {2, 0, 3, 1};
 
-static uint16_t actual_init[MAX_ELEMS];
-static uint16_t golden_init[MAX_ELEMS];
+static uint16_t actual_init[MAX_ELEMS] __attribute__((section(".data")));
+static uint16_t golden_init[MAX_ELEMS] __attribute__((section(".data")));
 
 static uint16_t *codebook;
 static uint8_t *indices;
@@ -71,7 +71,7 @@ static uint16_t *golden;
 
 static void init_buffers(void) {
 #if defined(__SPIKE__) || (USE_CACHE == 1)
-  codebook = (uint16_t *)codebook_init;
+  codebook = codebook_init;
   indices = (uint8_t *)indices_init;
   actual = actual_init;
   golden = golden_init;
@@ -134,10 +134,10 @@ void TEST_CASE3(void) { run_vlxblkei8_case(3, 16, 2); }
 // instructions interleaved with unit-stride stores - the sp-dictdecode
 // check-kernel pattern that exposed a hang on the doublebw VLSU.
 #define BG_ELEMS 128 // one m8 group at VLEN=512 (e32)
-static uint32_t bg_dict_init[64] __attribute__((aligned(128)));   // 32 blocks of 2 / 8 blocks of 16
-static uint8_t bg_idx_init[2][128]; // 128 idx/chunk: sized for blk_len=1 (TC10)
-static uint32_t bg_out_init[2 * BG_ELEMS];
-static uint32_t bg_gold_init[2 * BG_ELEMS];
+static uint32_t bg_dict_init[64] __attribute__((section(".data"), aligned(128)));   // 32 blocks of 2 / 8 blocks of 16
+static uint8_t bg_idx_init[2][128] __attribute__((section(".data"))); // 128 idx/chunk: sized for blk_len=1 (TC10)
+static uint32_t bg_out_init[2 * BG_ELEMS] __attribute__((section(".data")));
+static uint32_t bg_gold_init[2 * BG_ELEMS] __attribute__((section(".data")));
 
 static void run_bg_case(unsigned int case_id, unsigned int block_len) {
   const unsigned int groups = BG_ELEMS / block_len;
@@ -201,7 +201,7 @@ void TEST_CASE5(void) { run_bg_case(5, 16); } // 64-B blocks
 // benchmark check kernel deadlocks, so the hang needs accumulated
 // instruction count / state - this reproduces it at ISA-test runtime.
 #define TC6_ITERS 8
-static uint32_t tc6_out_init[4 * BG_ELEMS];
+static uint32_t tc6_out_init[4 * BG_ELEMS] __attribute__((section(".data")));
 
 static void run_tc6(unsigned int case_id, unsigned int block_len) {
   const unsigned int groups = BG_ELEMS / block_len;
@@ -372,15 +372,9 @@ int main(void) {
     enable_vec();
     init_buffers();
 
-#if USE_CACHE == 0
-    // DIAGNOSTIC (cache mode): TC1-3 use tiny partial-port narrow accesses
-    // (4-byte vle8 index loads); through the cache adapter these currently
-    // return zeros / wedge. Excluded pending the narrow-access investigation;
-    // TC4-9 cover the block semantics with all-port geometries.
     TEST_CASE1();
     TEST_CASE2();
     TEST_CASE3();
-#endif
     TEST_CASE4();
     TEST_CASE5();
     TEST_CASE6();
