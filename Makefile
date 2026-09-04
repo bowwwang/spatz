@@ -139,11 +139,18 @@ $(VERILATOR_INSTALL_DIR)/bin/verilator: sw/toolchain/verilator sw/toolchain/help
 #  Opcodes  #
 #############
 
-update_opcodes: sw/toolchain/riscv-opcodes sw/toolchain/riscv-opcodes/encoding.h hw/ip/snitch/src/riscv_instr.sv
-hw/ip/snitch/src/riscv_instr.sv: sw/toolchain/riscv-opcodes
+update_opcodes: sw/toolchain/riscv-opcodes sw/toolchain/riscv-opcodes/opcodes-vlxblk_CUSTOM sw/toolchain/riscv-opcodes/encoding.h hw/ip/snitch/src/riscv_instr.sv
+
+# opcodes-vlxblk_CUSTOM lives in the parent repo (util/): sw/toolchain is
+# gitignored and riscv-opcodes is a freshly-cloned nested repo, so the file
+# must be copied in before inst.sverilog/encoding.h can be generated.
+sw/toolchain/riscv-opcodes/opcodes-vlxblk_CUSTOM: util/opcodes-vlxblk_CUSTOM | sw/toolchain/riscv-opcodes
+	cp $< $@
+
+hw/ip/snitch/src/riscv_instr.sv: sw/toolchain/riscv-opcodes sw/toolchain/riscv-opcodes/opcodes-vlxblk_CUSTOM
 	MY_OPCODES=$(OPCODES) make -C sw/toolchain/riscv-opcodes inst.sverilog
 	mv sw/toolchain/riscv-opcodes/inst.sverilog $@
 
-sw/toolchain/riscv-opcodes/encoding.h:
+sw/toolchain/riscv-opcodes/encoding.h: sw/toolchain/riscv-opcodes/opcodes-vlxblk_CUSTOM
 	MY_OPCODES=$(OPCODES) make -C sw/toolchain/riscv-opcodes all
 	cp sw/toolchain/riscv-opcodes/encoding_out.h $@

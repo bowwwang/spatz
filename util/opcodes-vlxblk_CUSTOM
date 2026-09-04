@@ -1,0 +1,12 @@
+# VLXBLK extension: vector indexed block loads (one index per block of
+# 2**blk_log2 elements; blocks packed contiguously in the destination).
+# custom-1 opcode space (0x2B), coexisting with Xdma (funct7 0x00-0x07).
+#   funct7 0x0C = vlxblk indexed block load (funct3 = index EEW: 0=EI8, 5=EI16)
+#   funct7 0x0D = vsxblk indexed block store (funct3 = index EEW: 0=EI8, 5=EI16)
+#     unordered semantics (vsuxei-like); vs3 (store data) in the vd field
+#   funct7 0x0F = vsetblklen (set block length in elements from rs1)
+vlxblkei8.v   vd rs1 vs2 31..25=0x0C 14..12=0x0 6..2=0x0A 1..0=3
+vlxblkei16.v  vd rs1 vs2 31..25=0x0C 14..12=0x5 6..2=0x0A 1..0=3
+vsxblkei8.v   vd rs1 vs2 31..25=0x0D 14..12=0x0 6..2=0x0A 1..0=3
+vsxblkei16.v  vd rs1 vs2 31..25=0x0D 14..12=0x5 6..2=0x0A 1..0=3
+vsetblklen    rs1 31..25=0x0F 24..20=0 14..12=0x0 11..7=0 6..2=0x0A 1..0=3
