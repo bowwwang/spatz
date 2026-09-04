@@ -12,7 +12,11 @@ ROOT_DIR := ${SPATZ_DIR}
 # Binaries
 INSTALL_PREFIX        ?= install
 INSTALL_DIR           ?= ${ROOT_DIR}/${INSTALL_PREFIX}
-LLVM_INSTALL_DIR      ?= ${INSTALL_DIR}/llvm
+# LLVM 14.0.6 (mp-17 @ 91be672, ennest's runtime toolchain) rebuilt with
+# the VLXBLK/VSXBLK MC-layer patch so kernels use real mnemonics instead of
+# .word. Codegen is byte-identical to the shared prebuilt (only the RISCV
+# assembler gained the encodings). libc/crt still come from GCC_INSTALL_DIR.
+LLVM_INSTALL_DIR      ?= /scratch2/bowwang/llvm14-vlxblk/install
 GCC_INSTALL_DIR       ?= ${INSTALL_DIR}/riscv-gcc
 SPIKE_INSTALL_DIR     ?= ${INSTALL_DIR}/riscv-isa-sim
 BENDER_INSTALL_DIR    ?= ${INSTALL_DIR}/bender
