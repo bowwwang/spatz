@@ -22,10 +22,18 @@
 #include <stdio.h>
 #include <string.h>
 
-// Native VLXBLK mnemonics (LLVM 14 + MC-layer patch); x-register
-// form keeps the numeric rs1n interface, so call sites are unchanged.
-#define VLXBLKEI8_V(vd, rs1n, vs2)   "vlxblkei8.v v"  #vd ", (x" #rs1n "), v" #vs2 "\n"
-#define VSETBLKLEN(rs1n)             "vsetblklen x" #rs1n "\n"
+// Safe __fp16 -> float. This custom LLVM-14 toolchain's software fp16->float
+// conversion (a plain C cast) is broken (garbage/NaN); go through the
+// hardware half load + fcvt.s.h instead. Used by the CPU reference.
+static inline float f16f(const __fp16 *p) {
+  float v;
+  asm("flh ft0, 0(%1)\n\t"
+      "fcvt.s.h %0, ft0"
+      : "=f"(v)
+      : "r"(p)
+      : "ft0");
+  return v;
+}
 
 #ifndef CB_D
 #define CB_D 8       // codebook entry length (elements) -> 16-B blocks fp16
@@ -58,11 +66,7 @@ static void vqgemv_vlxblk(f16 *c, const f16 *a, const f16 *b0, const f16 *b1,
                           const uint8_t *bi0, const uint8_t *bi1,
                           const f16 *sc, unsigned int K, unsigned int N) {
   const unsigned int groups = N / CB_D;
-  register const f16 *cb0_reg asm("t2") = b0;   // x7
-  register const f16 *cb1_reg asm("t3") = b1;   // x28
-  register uint32_t bl asm("t0") = CB_D;         // x5
-  asm volatile("" ::"r"(cb0_reg), "r"(cb1_reg));
-  asm volatile(VSETBLKLEN(5) ::"r"(bl));
+  asm volatile("vsetblklen %0" ::"r"((uint32_t)CB_D));
   for (unsigned int g = 0; g < groups;) {
     size_t gvl;
     asm volatile("vsetvli %[gvl], %[vl], e16, m4, ta, ma"
@@ -73,12 +77,15 @@ static void vqgemv_vlxblk(f16 *c, const f16 *a, const f16 *b0, const f16 *b1,
       float av, scale;
       asm volatile("flh %[av], 0(%[a])" : [av] "=f"(av) : [a] "r"(a + k));
       asm volatile("flh %[s], 0(%[sc])" : [s] "=f"(scale) : [sc] "r"(sc + k));
+      // cb0/cb1 MUST be live operands of this block (%[cb0]/%[cb1]) — a
+      // pointer pinned to a fixed register before the loop is not guaranteed
+      // to survive into a separate later asm statement.
       asm volatile("vsetvli zero, %[gv], e8, m2, ta, ma\n"
                    "vle8.v v28, (%[i0])\n"
                    "vle8.v v30, (%[i1])\n"
                    "vsetvli zero, %[gvl], e16, m4, ta, ma\n"
-                   VLXBLKEI8_V(16, 7, 28)
-                   VLXBLKEI8_V(20, 28, 30)
+                   "vlxblkei8.v v16, (%[cb0]), v28\n"
+                   "vlxblkei8.v v20, (%[cb1]), v30\n"
                    "vfadd.vv v16, v16, v20\n"
                    "vfmul.vf v16, v16, %[scale]\n"
                    "vfmacc.vf v0, %[av], v16\n"
@@ -86,6 +93,7 @@ static void vqgemv_vlxblk(f16 *c, const f16 *a, const f16 *b0, const f16 *b1,
                    : [gv] "r"(group_vl), [gvl] "r"(gvl),
                      [i0] "r"(bi0 + k * groups + g),
                      [i1] "r"(bi1 + k * groups + g),
+                     [cb0] "r"(b0), [cb1] "r"(b1),
                      [scale] "f"(scale), [av] "f"(av)
                    : "v16", "v17", "v18", "v19", "v20", "v21", "v22", "v23",
                      "v28", "v29", "v30", "v31", "memory");
@@ -172,11 +180,11 @@ int main(void) {
         float acc = 0.0f;
         for (unsigned int k = 0; k < KDIM; ++k) {
           unsigned int ix = k * GROUPS + g;
-          float w = (float)cb0[(unsigned int)idx0[ix] * CB_D + d] +
-                    (float)cb1[(unsigned int)idx1[ix] * CB_D + d];
-          acc += (float)a_vec[k] * ((float)scales[k] * w);
+          float w = f16f(&cb0[(unsigned int)idx0[ix] * CB_D + d]) +
+                    f16f(&cb1[(unsigned int)idx1[ix] * CB_D + d]);
+          acc += f16f(&a_vec[k]) * (f16f(&scales[k]) * w);
         }
-        float got = (float)c_out[g * CB_D + d];
+        float got = f16f(&c_out[g * CB_D + d]);
         float err = got > acc ? got - acc : acc - got;
         float mag = acc < 0 ? -acc : acc;
         if (err > 0.25f + 0.015625f * mag) {
