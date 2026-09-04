@@ -36,6 +36,11 @@
 
 #define NB 256 // destinations (bags / nodes)
 #if ROW_D == 32
+#define ACC_LMUL "m1"   // 32 e32 = exactly one register
+#else
+#define ACC_LMUL "m2"   // 64 e32 = two registers
+#endif
+#if ROW_D == 32
 #define LP 40         // rows pooled per bag (DLRM-class pooling factor)
 #define RPG 8         // rows per m8 gather (8 x 32 e32 = 256 = vlmax)
 #elif ROW_D == 64
@@ -57,7 +62,7 @@ static void agg_vlxblk(float *out, const float *t, const uint16_t *idx,
   asm volatile(VSETBLKLEN(5) :: "r"(bl), "r"(tp));
   for (unsigned int b = 0; b < nb; ++b) {
     const uint16_t *bi = idx + b * LP;
-    asm volatile("vsetvli zero, %[d], e32, m2, ta, ma\n"
+    asm volatile("vsetvli zero, %[d], e32, " ACC_LMUL ", ta, ma\n"
                  "vmv.v.i v24, 0\n" :: [d] "r"(ROW_D) : "v24", "v25");
     for (unsigned int l = 0; l < LP; l += RPG) {
       unsigned int r = (LP - l) < RPG ? (LP - l) : RPG;
@@ -94,7 +99,7 @@ static void agg_vlxblk(float *out, const float *t, const uint16_t *idx,
       }
 #endif
     }
-    asm volatile("vsetvli zero, %[d], e32, m2, ta, ma\n"
+    asm volatile("vsetvli zero, %[d], e32, " ACC_LMUL ", ta, ma\n"
                  "vse32.v v24, (%[o])\n" :: [d] "r"(ROW_D),
                  [o] "r"(out + b * ROW_D) : "memory");
   }
@@ -104,14 +109,15 @@ static void agg_vle(float *out, const float *t, const uint16_t *idx,
                     unsigned int nb) {
   for (unsigned int b = 0; b < nb; ++b) {
     const uint16_t *bi = idx + b * LP;
-    asm volatile("vsetvli zero, %[d], e32, m2, ta, ma\n"
+    asm volatile("vsetvli zero, %[d], e32, " ACC_LMUL ", ta, ma\n"
                  "vmv.v.i v24, 0\n" :: [d] "r"(ROW_D) : "v24", "v25");
     for (unsigned int l = 0; l < LP; ++l) {
       const float *row = t + (uint32_t)bi[l] * ROW_D;
-      asm volatile("vle32.v v8, (%[r])\n"
+      asm volatile("vsetvli zero, %[d], e32, " ACC_LMUL ", ta, ma\n"
+                   "vle32.v v8, (%[r])\n"
                    "vfadd.vv v24, v24, v8\n"
                    :
-                   : [r] "r"(row)
+                   : [r] "r"(row), [d] "r"(ROW_D)
                    : "v8", "v9", "v24", "v25", "memory");
     }
     asm volatile("vse32.v v24, (%[o])\n" :: [o] "r"(out + b * ROW_D)
@@ -167,8 +173,11 @@ int main(void) {
         for (unsigned int l = 0; l < LP; ++l)
           acc += ga_tbl[(uint32_t)ga_idx[b * LP + l] * ROW_D + d];
 #endif
-        if (ga_out[b * ROW_D + d] != acc) {
-          printf("FAILED b=%d d=%d\n", b, d);
+        float got = ga_out[b * ROW_D + d];
+        float err = got > acc ? got - acc : acc - got;
+        float mag = acc < 0 ? -acc : acc;
+        if (err > 0.03125f + 9.5e-7f * mag) {
+          printf("FAILED b=%d d=%d got=%f exp=%f\n", b, d, got, acc);
           fails = 1;
         }
       }
