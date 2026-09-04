@@ -1,0 +1,98 @@
+diff --git a/llvm/lib/Target/RISCV/RISCVInstrFormatsV.td b/llvm/lib/Target/RISCV/RISCVInstrFormatsV.td
+index 69e9d3553..7746bfe4f 100644
+--- a/llvm/lib/Target/RISCV/RISCVInstrFormatsV.td
++++ b/llvm/lib/Target/RISCV/RISCVInstrFormatsV.td
+@@ -267,6 +267,39 @@ class RVInstVLX<bits<3> nf, bit mew, RISCVMOP mop, bits<3> width,
+   let RVVConstraint = VMConstraint;
+ }
+ 
++// Custom VLXBLK/VSXBLK indexed block load/store on custom-1 (0101011):
++// one index per block of blk_len contiguous SEW elements; blk_len is
++// architectural state set by vsetblklen. No vm field: always unmasked.
++class RVInstVLXBLK<bits<7> funct7, bits<3> width,
++                   dag outs, dag ins, string opcodestr, string argstr>
++    : RVInst<outs, ins, opcodestr, argstr, [], InstFormatR> {
++  bits<5> vs2;
++  bits<5> rs1;
++  bits<5> vd;
++
++  let Inst{31-25} = funct7;
++  let Inst{24-20} = vs2;
++  let Inst{19-15} = rs1;
++  let Inst{14-12} = width;
++  let Inst{11-7}  = vd;
++  let Inst{6-0}   = 0b0101011;
++
++  let Uses = [VTYPE, VL];
++}
++
++// vsetblklen rs1: write the VLXBLK block length from a scalar register.
++class RVInstVSetBlkLen<dag outs, dag ins, string opcodestr, string argstr>
++    : RVInst<outs, ins, opcodestr, argstr, [], InstFormatR> {
++  bits<5> rs1;
++
++  let Inst{31-25} = 0b0001111;
++  let Inst{24-20} = 0b00000;
++  let Inst{19-15} = rs1;
++  let Inst{14-12} = 0b000;
++  let Inst{11-7}  = 0b00000;
++  let Inst{6-0}   = 0b0101011;
++}
++
+ class RVInstVSU<bits<3> nf, bit mew, RISCVLSUMOP sumop,
+                 bits<3> width, dag outs, dag ins, string opcodestr,
+                 string argstr>
+diff --git a/llvm/lib/Target/RISCV/RISCVInstrInfoV.td b/llvm/lib/Target/RISCV/RISCVInstrInfoV.td
+index a529301d5..6cc7d2937 100644
+--- a/llvm/lib/Target/RISCV/RISCVInstrInfoV.td
++++ b/llvm/lib/Target/RISCV/RISCVInstrInfoV.td
+@@ -215,6 +215,21 @@ class VIndexedStore<RISCVMOP mop, RISCVWidth width, string opcodestr>
+                 (ins VR:$vs3, GPR:$rs1, VR:$vs2, VMaskOp:$vm),
+                 opcodestr, "$vs3, (${rs1}), $vs2$vm">;
+ 
++// indexed block load vd, (rs1), vs2 (custom VLXBLK, unmasked)
++class VIndexedBlockLoad<bits<7> funct7, RISCVWidth width, string opcodestr>
++    : RVInstVLXBLK<funct7, width.Value{2-0},
++                   (outs VR:$vd),
++                   (ins GPR:$rs1, VR:$vs2),
++                   opcodestr, "$vd, (${rs1}), $vs2">;
++
++// indexed block store vs3, (rs1), vs2 (custom VSXBLK, unmasked; the store-
++// data register occupies the vd field of the encoding)
++class VIndexedBlockStore<bits<7> funct7, RISCVWidth width, string opcodestr>
++    : RVInstVLXBLK<funct7, width.Value{2-0},
++                   (outs),
++                   (ins VR:$vd, GPR:$rs1, VR:$vs2),
++                   opcodestr, "$vd, (${rs1}), $vs2">;
++
+ // segment store vd, vs3, (rs1), vm
+ class VUnitStrideSegmentStore<bits<3> nf, RISCVWidth width, string opcodestr>
+     : RVInstVSU<nf, width.Value{3}, SUMOPUnitStride, width.Value{2-0},
+@@ -817,6 +832,27 @@ foreach eew = [8, 16, 32] in {
+ }
+ 
+ defm "" : VIndexLoadStore<[8, 16, 32]>;
++
++// Custom indexed block load/store (VLXBLK/VSXBLK) + block-length config, on
++// custom-1. funct7 0x0C = loads, 0x0D = stores, 0x0F = vsetblklen; funct3
++// selects the index EEW (000=EI8, 101=EI16).
++let hasSideEffects = 1, mayLoad = 0, mayStore = 0 in
++def VSETBLKLEN : RVInstVSetBlkLen<(outs), (ins GPR:$rs1),
++                                  "vsetblklen", "$rs1">;
++
++let hasSideEffects = 0, mayLoad = 1, mayStore = 0 in {
++def VLXBLKEI8_V  : VIndexedBlockLoad<0b0001100, LSWidth8,  "vlxblkei8.v">,
++                   VLXSched<8, "U">;
++def VLXBLKEI16_V : VIndexedBlockLoad<0b0001100, LSWidth16, "vlxblkei16.v">,
++                   VLXSched<16, "U">;
++}
++
++let hasSideEffects = 0, mayLoad = 0, mayStore = 1 in {
++def VSXBLKEI8_V  : VIndexedBlockStore<0b0001101, LSWidth8,  "vsxblkei8.v">,
++                   VLXSched<8, "U">;
++def VSXBLKEI16_V : VIndexedBlockStore<0b0001101, LSWidth16, "vsxblkei16.v">,
++                   VLXSched<16, "U">;
++}
+ } // Predicates = [HasVInstructions]
+ 
+ let Predicates = [HasVInstructions] in {
