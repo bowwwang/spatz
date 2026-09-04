@@ -593,9 +593,7 @@ module spatz_fpu_sequencer
     riscv_instr::MLE8_V_A, riscv_instr::MLE8_V_B, riscv_instr::MLE8_V_C, riscv_instr::MLE16_V_A,
     riscv_instr::MLE16_V_B, riscv_instr::MLE16_V_C, riscv_instr::MLE32_V_A, riscv_instr::MLE32_V_B,
     riscv_instr::MLE32_V_C, riscv_instr::MLE64_V_A, riscv_instr::MLE64_V_B, riscv_instr::MLE64_V_C
-`ifdef ENABLE_VLXBLK
     , riscv_instr::VLXBLKEI8_V, riscv_instr::VLXBLKEI16_V
-`endif
     };
 
   // Is the current instruction a vector store?
@@ -608,9 +606,7 @@ module spatz_fpu_sequencer
     riscv_instr::MSE8_V_A, riscv_instr::MSE8_V_B, riscv_instr::MSE8_V_C, riscv_instr::MSE16_V_A,
     riscv_instr::MSE16_V_B, riscv_instr::MSE16_V_C, riscv_instr::MSE32_V_A, riscv_instr::MSE32_V_B,
     riscv_instr::MSE32_V_C, riscv_instr::MSE64_V_A, riscv_instr::MSE64_V_B, riscv_instr::MSE64_V_C
-`ifdef ENABLE_VLXBLK
     , riscv_instr::VSXBLKEI8_V, riscv_instr::VSXBLKEI16_V
-`endif
     };
 
   // Do we need to delay is load/store because of the VLSU?

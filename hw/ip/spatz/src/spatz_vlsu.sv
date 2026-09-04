@@ -162,12 +162,8 @@ module spatz_vlsu
 
   // VLXBLK indexed block load (one index per block of 2**blk_log2 elements)
   logic mem_is_indexed_blk;
-`ifdef ENABLE_VLXBLK
   assign mem_is_indexed_blk = mem_spatz_req_valid &&
                               ((mem_spatz_req.op == VLXBLK) || (mem_spatz_req.op == VSXBLK));
-`else
-  assign mem_is_indexed_blk = 1'b0;
-`endif
   // Any operation that consumes an index vector on vrf read port 1
   logic mem_is_indexed_any;
   assign mem_is_indexed_any = mem_is_indexed || mem_is_indexed_blk;
@@ -553,7 +549,6 @@ module spatz_vlsu
     maxew_t idx_offset;
     assign idx_offset = mem_idx_counter_q[port];
 
-`ifdef ENABLE_VLXBLK
     // Indexed block load (VLXBLK): one index per block of 2**blk_log2
     // elements. All block arithmetic is shift/mask (power-of-two block
     // lengths only, normalized in the controller) - no divider/multiplier.
@@ -587,12 +582,10 @@ module spatz_vlsu
     // ports, one per block), unlike regular indexed ops whose index stream
     // is port-interleaved and tracked by mem_idx_counter.
     assign blk_idx_gbyte = vlen_t'(blk_idx << mem_spatz_req.op_mem.ew);
-`endif
 
     always_comb begin
       stride = mem_is_strided ? mem_spatz_req.rs2 >> mem_spatz_req.vtype.vsew : 'd1;
 
-`ifdef ENABLE_VLXBLK
       blk_index_value = '0;
       if (mem_is_indexed_blk) begin
         // Block-granular gather: the (zero-extended) index selects the
@@ -607,7 +600,6 @@ module spatz_vlsu
         offset = (blk_index_value << (blk_log2 + mem_spatz_req.vtype.vsew))
                + (blk_elem_off << mem_spatz_req.vtype.vsew);
       end else
-`endif
       if (mem_is_indexed) begin
         // What is the relationship between data and index width?
         automatic logic [1:0] data_index_width_diff = int'(mem_spatz_req.vtype.vsew) - int'(mem_spatz_req.op_mem.ew);
@@ -642,14 +634,12 @@ module spatz_vlsu
       mx_offset_addr_d[port]    = offset;
 
       pending_index[port] = (mem_idx_counter_q[port][$clog2(NrWordsPerVector*ELENB)-1:0] >> MAXEW) != vs2_vreg_addr[$clog2(NrWordsPerVector)-1:0];
-`ifdef ENABLE_VLXBLK
       // For block loads the needed index-vector word is a pure function of
       // the data counter: stall the port whenever that word is not the one
       // currently addressed on vrf read port 1 (full-width compare against
       // the monotonic word pointer - no modulo aliasing).
       if (mem_is_indexed_blk)
         pending_index[port] = vreg_elem_t'(blk_idx_gbyte >> $clog2(N_FU*ELENB)) != vs2_elem_id_q;
-`endif
     end
   end: gen_mem_req_addr
 
@@ -1012,7 +1002,6 @@ module spatz_vlsu
 
     // Count which vs2 element we should load (indexed loads)
     vs2_elem_id_d = vs2_elem_id_q;
-`ifdef ENABLE_VLXBLK
     // Block loads: advance the shared index-word pointer only when every
     // port that still has data beats needs a later word, and at least one
     // port is still active (finished ports do not block or force advance).
@@ -1020,7 +1009,6 @@ module spatz_vlsu
       if (|mem_operation_valid && &(pending_index | ~mem_operation_valid))
         vs2_elem_id_d = vs2_elem_id_q + 1;
     end else
-`endif
     if (&(pending_index ^ ~mem_operation_valid) && mem_is_indexed)
       vs2_elem_id_d = vs2_elem_id_q + 1;
     if (mem_spatz_req_ready)

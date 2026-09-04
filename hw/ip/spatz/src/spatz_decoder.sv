@@ -309,7 +309,6 @@ module spatz_decoder
           endcase // decoder_req_i.instr
         end
 
-`ifdef ENABLE_VLXBLK
         riscv_instr::VLXBLKEI8_V,
         riscv_instr::VLXBLKEI16_V: begin
           automatic vreg_t blk_vd         = decoder_req_i.instr[11:7];
@@ -379,7 +378,6 @@ module spatz_decoder
           spatz_req.ex_unit = CON;
           spatz_req.rs1     = decoder_req_i.rs1;
         end
-`endif
 
         // Vector instruction
         riscv_instr::VADD_VV,

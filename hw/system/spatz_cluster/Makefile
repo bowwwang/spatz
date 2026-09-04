@@ -30,14 +30,6 @@ endif
 CFG ?= flamingo
 SPATZ_CLUSTER_CFG ?= $(SPATZ_CLUSTER_DIR)/cfg/$(CFG).hjson
 
-# VLXBLK (indexed block load) compile-time gate, on by default.
-# Set ENABLE_VLXBLK=0 to build the cluster without the extension.
-ENABLE_VLXBLK ?= 1
-ifeq ($(ENABLE_VLXBLK),1)
-	DEFS += -DENABLE_VLXBLK
-	SPATZ_CLUSTER_CFG_DEFINES += -DENABLE_VLXBLK=1
-endif
-
 # Include Makefrag
 include $(ROOT)/util/Makefrag
 
