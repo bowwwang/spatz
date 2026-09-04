@@ -6,11 +6,12 @@
 // gathered by neighbor id (fp64, D=1: 8-B "blocks" = one port word).
 // This is the fine-granularity regime point: the win is INDEX SEMANTICS -
 // vlxblk consumes u16 vertex ids directly (hardware scales by 8), while
-// vluxei64 needs the ids widened u16->u32->u64 and shifted by 3 in
-// software, with an 8-byte-per-element index stream.
+// the vluxei baseline widens+scales the ids in software (vwmulu by 8,
+// the most favorable single-op translation) and carries a 4-B/element
+// index stream via vluxei32.
 //
 // Arms (VARIANT): 1 = vlxblkei16 with blk_len=1 (e64 data)
-//                 0 = vluxei64 + software index widening/scaling
+//                 0 = vluxei32 + software index widening/scaling
 // Check: exact fp64 (ordered reduction vfredosum in both arms).
 // Synthetic uniform-degree graph (deg=64), stated simplification.
 
@@ -19,10 +20,10 @@
 #include <stdio.h>
 #include <string.h>
 
-#define VLXBLK_WORD(f7, f3, vd, rs1n, vs2) \
-  ".word ((" #f7 ")<<25)|((" #vs2 ")<<20)|((" #rs1n ")<<15)|((" #f3 ")<<12)|((" #vd ")<<7)|0x2B\n"
-#define VLXBLKEI16_V(vd, rs1n, vs2) VLXBLK_WORD(0x0C, 0x5, vd, rs1n, vs2)
-#define VSETBLKLEN(rs1n)            VLXBLK_WORD(0x0F, 0x0, 0, rs1n, 0)
+// Native VLXBLK mnemonics (LLVM 14 + MC-layer patch); x-register
+// form keeps the numeric rs1n interface, so call sites are unchanged.
+#define VLXBLKEI16_V(vd, rs1n, vs2)  "vlxblkei16.v v" #vd ", (x" #rs1n "), v" #vs2 "\n"
+#define VSETBLKLEN(rs1n)             "vsetblklen x" #rs1n "\n"
 
 #ifndef NV
 #define NV 8192 // vertices (contrib table NV * 8 B)
@@ -89,24 +90,23 @@ int main(void) {
 #else
     for (unsigned int v = 0; v < NACT; ++v) {
       double s;
-      // index translation: u16 ids -> u64 byte offsets (two widening steps
-      // + shift by 3): the software cost vlxblk eliminates.
+      // index translation: u16 ids -> u32 BYTE offsets. The most favorable
+      // translation available: vwmulu.vx by 8 fuses widen and scale into
+      // one op; vluxei32 then carries a 4-B/element index stream (vs the
+      // 2-B entry-number stream vlxblk consumes directly).
       asm volatile("vsetvli zero, %[dg], e16, m1, ta, ma\n"
                    "vle16.v v2, (%[i0])\n"
-                   "vwaddu.vx v4, v2, zero\n"
-                   "vsetvli zero, %[dg], e32, m2, ta, ma\n"
-                   "vwaddu.vx v8, v4, zero\n"
+                   "vwmulu.vx v4, v2, %[eight]\n"
                    "vsetvli zero, %[dg], e64, m4, ta, ma\n"
-                   "vsll.vi v8, v8, 3\n"
-                   "vluxei64.v v12, (%[c0]), v8\n"
+                   "vluxei32.v v12, (%[c0]), v4\n"
                    "vmv.s.x v16, zero\n"
                    "vfredosum.vs v16, v12, v16\n"
                    "vfmv.f.s %[s], v16\n"
                    : [s] "=f"(s)
                    : [dg] "r"(DEG), [i0] "r"(pr_nbr + v * DEG),
-                     [c0] "r"(pr_contrib)
-                   : "v2", "v4", "v5", "v8", "v9", "v10", "v11", "v12",
-                     "v13", "v14", "v15", "v16", "memory");
+                     [c0] "r"(pr_contrib), [eight] "r"(8u)
+                   : "v2", "v4", "v5", "v12", "v13", "v14", "v15", "v16",
+                     "memory");
       pr_out[v] = base + damp * s;
     }
 #endif

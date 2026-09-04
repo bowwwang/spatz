@@ -34,12 +34,12 @@
 // encodings (custom-1 = 0x2B; see sw/toolchain/riscv-opcodes/
 // opcodes-vlxblk_CUSTOM). Scalar operands are pinned to fixed registers
 // via register-asm variables; vector register numbers are literal.
-#define VLXBLK_WORD(f7, f3, vd, rs1n, vs2) \
-  ".word ((" #f7 ")<<25)|((" #vs2 ")<<20)|((" #rs1n ")<<15)|((" #f3 ")<<12)|((" #vd ")<<7)|0x2B\n"
-#define VLXBLKEI8_V(vd, rs1n, vs2)  VLXBLK_WORD(0x0C, 0x0, vd, rs1n, vs2)
-#define VLXBLKEI16_V(vd, rs1n, vs2) VLXBLK_WORD(0x0C, 0x5, vd, rs1n, vs2)
-#define VSXBLKEI16_V(vs3, rs1n, vs2) VLXBLK_WORD(0x0D, 0x5, vs3, rs1n, vs2)
-#define VSETBLKLEN(rs1n)            VLXBLK_WORD(0x0F, 0x0, 0, rs1n, 0)
+// Native VLXBLK mnemonics (LLVM 14 + the MC-layer patch). The x-register
+// form keeps the numeric rs1n interface, so call sites are unchanged.
+#define VLXBLKEI8_V(vd, rs1n, vs2)   "vlxblkei8.v v"  #vd ", (x" #rs1n "), v" #vs2 "\n"
+#define VLXBLKEI16_V(vd, rs1n, vs2)  "vlxblkei16.v v" #vd ", (x" #rs1n "), v" #vs2 "\n"
+#define VSXBLKEI16_V(vs3, rs1n, vs2) "vsxblkei16.v v" #vs3 ", (x" #rs1n "), v" #vs2 "\n"
+#define VSETBLKLEN(rs1n)             "vsetblklen x" #rs1n "\n"
 
 #include <stdint.h>
 #include <string.h>

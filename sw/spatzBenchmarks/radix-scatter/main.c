@@ -17,10 +17,10 @@
 #include <stdio.h>
 #include <string.h>
 
-#define VLXBLK_WORD(f7, f3, vd, rs1n, vs2) \
-  ".word ((" #f7 ")<<25)|((" #vs2 ")<<20)|((" #rs1n ")<<15)|((" #f3 ")<<12)|((" #vd ")<<7)|0x2B\n"
-#define VSXBLKEI16_V(vs3, rs1n, vs2) VLXBLK_WORD(0x0D, 0x5, vs3, rs1n, vs2)
-#define VSETBLKLEN(rs1n)             VLXBLK_WORD(0x0F, 0x0, 0, rs1n, 0)
+// Native VLXBLK mnemonics (LLVM 14 + MC-layer patch); x-register
+// form keeps the numeric rs1n interface, so call sites are unchanged.
+#define VSXBLKEI16_V(vs3, rs1n, vs2) "vsxblkei16.v v" #vs3 ", (x" #rs1n "), v" #vs2 "\n"
+#define VSETBLKLEN(rs1n)             "vsetblklen x" #rs1n "\n"
 
 #ifndef NREC
 #define NREC 4096 // records; 16 B each
@@ -75,21 +75,21 @@ static void scatter_vsuxei(uint32_t *dst, const uint32_t *src,
       const unsigned long dhi = delta << 16;
       if (!(t & 1))
         asm volatile("vsetvli zero, %[l], e16, m2, ta, ma\n"
-                     "vwaddu.vx v24, v4, zero\n"
+                     "vwmulu.vx v24, v4, %[one]\n"
                      "vsetvli zero, %[l], e32, m4, ta, ma\n"
                      "vsll.vi v28, v24, 16\n"
                      "vadd.vv v24, v24, v28\n"
                      "vadd.vx v24, v24, %[dh]\n"
-                     :: [l] "r"(len), [dh] "r"(dhi)
+                     :: [l] "r"(len), [dh] "r"(dhi), [one] "r"(1u)
                      : "v24", "v25", "v26", "v27", "v28", "v29", "v30", "v31");
       else
         asm volatile("vsetvli zero, %[l], e16, m2, ta, ma\n"
-                     "vwaddu.vx v4, v24, zero\n"
+                     "vwmulu.vx v4, v24, %[one]\n"
                      "vsetvli zero, %[l], e32, m4, ta, ma\n"
                      "vsll.vi v28, v4, 16\n"
                      "vadd.vv v4, v4, v28\n"
                      "vadd.vx v4, v4, %[dh]\n"
-                     :: [l] "r"(len), [dh] "r"(dhi)
+                     :: [l] "r"(len), [dh] "r"(dhi), [one] "r"(1u)
                      : "v4", "v5", "v6", "v7", "v28", "v29", "v30", "v31");
       len <<= 1;
       delta >>= 1;

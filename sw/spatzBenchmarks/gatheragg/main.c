@@ -19,10 +19,10 @@
 #include <stdio.h>
 #include <string.h>
 
-#define VLXBLK_WORD(f7, f3, vd, rs1n, vs2) \
-  ".word ((" #f7 ")<<25)|((" #vs2 ")<<20)|((" #rs1n ")<<15)|((" #f3 ")<<12)|((" #vd ")<<7)|0x2B\n"
-#define VLXBLKEI16_V(vd, rs1n, vs2) VLXBLK_WORD(0x0C, 0x5, vd, rs1n, vs2)
-#define VSETBLKLEN(rs1n)            VLXBLK_WORD(0x0F, 0x0, 0, rs1n, 0)
+// Native VLXBLK mnemonics (LLVM 14 + MC-layer patch); x-register
+// form keeps the numeric rs1n interface, so call sites are unchanged.
+#define VLXBLKEI16_V(vd, rs1n, vs2)  "vlxblkei16.v v" #vd ", (x" #rs1n "), v" #vs2 "\n"
+#define VSETBLKLEN(rs1n)             "vsetblklen x" #rs1n "\n"
 
 #ifndef ROW_D
 #define ROW_D 32
