@@ -197,129 +197,164 @@ add_vqdecode(0 rvv 16)
 add_vqdecode(0 rvv 32)
 add_vqdecode(0 rvv 64)
 
-# attn-vagg: sparse-attention V-aggregation (256-B fp16 rows)
-macro(add_attnvagg variant vname ntok)
-  set(target_name attn-vagg-${vname}-n${ntok})
-  add_snitch_test(${target_name} attn-vagg/main.c)
+# attn-vagg: sparse-attention V-aggregation (256-B fp16 rows = m4 @ e16).
+# sp-fmatmul layout: one main per arm (main-vlxblk.c / main-vle.c), kernel
+# in attn-vagg/kernel/, config from the generated DATAHEADER
+# (attn-vagg/script/gen_data.py -> data/data_n<ntok>.h; the header carries
+# the NQ/TOPK/HD/NTOK parameters, so no size macros).
+# Paper config (BENCHMARK_PLAN 2026-09-07): 16K-token V cache = 4 MiB,
+# TOPK=1024 budget, NQ=16.
+macro(add_attnvagg arm ntok)
+  set(target_name attn-vagg-${arm}-n${ntok})
+  add_snitch_test(${target_name} attn-vagg/main-${arm}.c)
   target_link_libraries(test-${SNITCH_TEST_PREFIX}${target_name} benchmark ${SNITCH_RUNTIME})
-  target_compile_definitions(test-${SNITCH_TEST_PREFIX}${target_name} PUBLIC VARIANT=${variant} NTOK=${ntok} PRINT_RESULT USE_CACHE=${USE_CACHE} PRINT_UART=${PRINT_UART})
+  target_compile_definitions(test-${SNITCH_TEST_PREFIX}${target_name} PUBLIC DATAHEADER="data/data_n${ntok}.h" PRINT_RESULT USE_CACHE=${USE_CACHE} PRINT_UART=${PRINT_UART})
 endmacro()
-add_attnvagg(1 vlxblk 512)
-add_attnvagg(1 vlxblk 4096)
-add_attnvagg(2 vle 512)
-add_attnvagg(2 vle 4096)
-# paper config (BENCHMARK_PLAN 2026-09-07): 16K-token V cache = 4 MiB,
-# TOPK=1024 budget, NQ=16 (TOPK/NQ are source defines)
-add_attnvagg(1 vlxblk 16384)
-add_attnvagg(2 vle 16384)
+add_attnvagg(vlxblk 16384)
+add_attnvagg(vle 16384)
 
-# gatheragg: DLRM embedding-bag (d32) and GNN aggregation (d64)
-macro(add_gatheragg variant vname rowd nrows)
-  set(target_name gatheragg-${vname}-d${rowd}-n${nrows})
-  add_snitch_test(${target_name} gatheragg/main.c)
+# gatheragg: DLRM embedding-bag (sls-fp32, d32) and GNN aggregation
+# (gnnagg, d64). sp-fmatmul layout: one main per arm (main-vlxblk.c /
+# main-vle.c), kernels in gatheragg/kernel/, config from the generated
+# DATAHEADER (gatheragg/script/gen_data.py -> data/data_<cfg>.h; the header
+# carries NB/ROW_D/LP/NROWS/DBG_EVERY, so no size macros).
+# Paper configs (BENCHMARK_PLAN 2026-09-07 ruling): NB=2048 destinations,
+# sls-fp32 = d32-n16384 (LP=40, 2 MiB table), gnnagg = d64-n16384 (LP=25,
+# 4 MiB table).
+#   vname: target arm name   arm: main-<arm>.c   cfg: target suffix
+#   data: data/data_<data>.h
+macro(add_gatheragg vname arm cfg data)
+  set(target_name gatheragg-${vname}-${cfg})
+  add_snitch_test(${target_name} gatheragg/main-${arm}.c)
   target_link_libraries(test-${SNITCH_TEST_PREFIX}${target_name} benchmark ${SNITCH_RUNTIME})
-  target_compile_definitions(test-${SNITCH_TEST_PREFIX}${target_name} PUBLIC VARIANT=${variant} ROW_D=${rowd} NROWS=${nrows} PRINT_RESULT USE_CACHE=${USE_CACHE} PRINT_UART=${PRINT_UART})
+  target_compile_definitions(test-${SNITCH_TEST_PREFIX}${target_name} PUBLIC DATAHEADER="data/data_${data}.h" PRINT_RESULT USE_CACHE=${USE_CACHE} PRINT_UART=${PRINT_UART})
 endmacro()
-add_gatheragg(1 vlxblk 32 4096)
-add_gatheragg(1 vlxblk 32 16384)
-add_gatheragg(2 vle 32 4096)
-add_gatheragg(2 vle 32 16384)
-add_gatheragg(1 vlxblk 64 2048)
-add_gatheragg(1 vlxblk 64 8192)
-add_gatheragg(2 vle 64 2048)
-add_gatheragg(2 vle 64 8192)
-# paper configs (BENCHMARK_PLAN 2026-09-07): sls-fp32 = d32-n16384
-# (2 MiB, exists above); gnnagg = d64-n16384 (4 MiB table)
-add_gatheragg(1 vlxblk 64 16384)
-add_gatheragg(2 vle 64 16384)
+add_gatheragg(vlxblk vlxblk d32-n16384 d32_n16384)
+add_gatheragg(vle vle d32-n16384 d32_n16384)
+add_gatheragg(vlxblk vlxblk d64-n16384 d64_n16384)
+add_gatheragg(vle vle d64-n16384 d64_n16384)
+# Bug-A waveform repro: same vlxblk main + a data header with DBG_EVERY=32
+# (the kernel prints "DBGG <bag>" every 32 bags). Never used for measurement.
+add_gatheragg(vlxblk-dbg vlxblk d32-n16384 d32_n16384_dbg)
 
 # isaprobe: instruction-level hang probes (debug aid, not a benchmark)
 add_snitch_test(isaprobe isaprobe/main.c)
 target_link_libraries(test-${SNITCH_TEST_PREFIX}isaprobe benchmark ${SNITCH_RUNTIME})
 target_compile_definitions(test-${SNITCH_TEST_PREFIX}isaprobe PUBLIC PRINT_RESULT USE_CACHE=${USE_CACHE} PRINT_UART=${PRINT_UART})
 
-# slsint8: SparseLengthsSum, int8 deployed config (paper: sls/int8)
-macro(add_slsint8 variant vname)
-  set(target_name slsint8-${vname})
-  add_snitch_test(${target_name} slsint8/main.c)
+# slsint8: SparseLengthsSum, int8 deployed config (paper: sls/int8).
+# sp-fmatmul layout: one main per arm (main-vlxblk.c / main-vle.c), kernels
+# in slsint8/kernel/, config from the generated DATAHEADER
+# (slsint8/script/gen_data.py -> data/data_<cfg>.h; the header carries the
+# NB/LP/ROW_D/NROWS parameters, so no size macros).
+# Paper config: NB=2048 bags x LP=40 lookups, 65,536 rows x 32 B (u16 id
+# ceiling, 2 MiB table) + fp16 (scale, bias) per row.
+macro(add_slsint8 arm cfg)
+  set(target_name slsint8-${arm})
+  add_snitch_test(${target_name} slsint8/main-${arm}.c)
   target_link_libraries(test-${SNITCH_TEST_PREFIX}${target_name} benchmark ${SNITCH_RUNTIME})
-  target_compile_definitions(test-${SNITCH_TEST_PREFIX}${target_name} PUBLIC VARIANT=${variant} NROWS=65536 PRINT_RESULT USE_CACHE=${USE_CACHE} PRINT_UART=${PRINT_UART})
+  target_compile_definitions(test-${SNITCH_TEST_PREFIX}${target_name} PUBLIC DATAHEADER="data/data_${cfg}.h" PRINT_RESULT USE_CACHE=${USE_CACHE} PRINT_UART=${PRINT_UART})
 endmacro()
-add_slsint8(1 vlxblk)
-add_slsint8(0 vle)
+add_slsint8(vlxblk n65536)
+add_slsint8(vle n65536)
 
-# radix-scatter: DB partitioning record scatter (vsxblk)
-macro(add_radix variant vname nrec)
-  set(target_name radix-scatter-${vname}-n${nrec})
-  add_snitch_test(${target_name} radix-scatter/main.c)
+# radix-scatter: DB partitioning record scatter (vsxblk vs vsoxei32 baseline).
+# sp-fmatmul layout: one main per arm (main-vsxblk.c / main-vsuxei.c), kernels
+# in radix-scatter/kernel/, config from the generated DATAHEADER
+# (radix-scatter/script/gen_data.py -> data/data_n<nrec>.h; the header carries
+# the NREC/RD/FANOUT_LOG2 parameters and the fill seeds, so no size macros;
+# slots/src/dst are built on-core from the closed forms the generator mirrors).
+# Paper config (BENCHMARK_PLAN 2026-09-07): 65,536 records = u16 slot
+# ceiling, 1 MiB dst, F=256 realistic radix slots. The baseline arm is the
+# column-decomposed vsoxei32 kernel; its main/target keep the historical
+# "vsuxei" name.
+macro(add_radix arm cfg)
+  set(target_name radix-scatter-${arm}-${cfg})
+  add_snitch_test(${target_name} radix-scatter/main-${arm}.c)
   target_link_libraries(test-${SNITCH_TEST_PREFIX}${target_name} benchmark ${SNITCH_RUNTIME})
-  target_compile_definitions(test-${SNITCH_TEST_PREFIX}${target_name} PUBLIC VARIANT=${variant} NREC=${nrec} PRINT_RESULT USE_CACHE=${USE_CACHE} PRINT_UART=${PRINT_UART})
+  target_compile_definitions(test-${SNITCH_TEST_PREFIX}${target_name} PUBLIC DATAHEADER="data/data_${cfg}.h" PRINT_RESULT USE_CACHE=${USE_CACHE} PRINT_UART=${PRINT_UART})
 endmacro()
-add_radix(1 vsxblk 4096)
-add_radix(1 vsxblk 16384)
-add_radix(0 vsuxei 4096)
-# paper config (BENCHMARK_PLAN 2026-09-07): 65,536 records = u16 slot
-# ceiling, 1 MiB dst, F=256 realistic radix slots, vsuxei32 baseline
-add_radix(1 vsxblk 65536)
-add_radix(0 vsuxei 65536)
+add_radix(vsxblk n65536)
+add_radix(vsuxei n65536)
+# Smoke configs of the old block (n4096 / n16384) are not generated by
+# default; to restore them run `script/gen_data.py --nrec 4096 16384 65536`
+# and add `add_radix(vsxblk n4096)` etc.
 
-# pr-gather: PageRank pull, D=1 x e64 (index-semantics regime point)
-macro(add_prg variant vname nv)
-  set(target_name pr-gather-${vname}-n${nv})
-  add_snitch_test(${target_name} pr-gather/main.c)
+# pr-gather: PageRank pull, D=1 x e64 (index-semantics regime point).
+# sp-fmatmul layout: one main per arm (main-vlxblk.c / main-vluxei.c),
+# kernels in pr-gather/kernel/, config from the generated DATAHEADER
+# (pr-gather/script/gen_data.py -> data/data_n<nv>.h; the header carries
+# NV/NACT/DEG, base/damp and the expected output, so no size macros).
+# The baseline arm keeps its historical `vluxei` file/target name (batch
+# vluxei32 hangs on the first missing gather (erratum #3) and misses are
+# intrinsic here (512 KiB contrib > L1).
+# Paper config (BENCHMARK_PLAN 2026-09-07): NV=65,536, NACT=4,096, DEG=16.
+macro(add_prg arm cfg)
+  set(target_name pr-gather-${arm}-${cfg})
+  add_snitch_test(${target_name} pr-gather/main-${arm}.c)
   target_link_libraries(test-${SNITCH_TEST_PREFIX}${target_name} benchmark ${SNITCH_RUNTIME})
-  target_compile_definitions(test-${SNITCH_TEST_PREFIX}${target_name} PUBLIC VARIANT=${variant} NV=${nv} PRINT_RESULT USE_CACHE=${USE_CACHE} PRINT_UART=${PRINT_UART})
+  target_compile_definitions(test-${SNITCH_TEST_PREFIX}${target_name} PUBLIC DATAHEADER="data/data_${cfg}.h" PRINT_RESULT USE_CACHE=${USE_CACHE} PRINT_UART=${PRINT_UART})
 endmacro()
-add_prg(1 vlxblk 8192)
-add_prg(1 vlxblk 65536)
-add_prg(0 vluxei 8192)
-add_prg(0 vluxei 65536)
+add_prg(vlxblk n65536)
+add_prg(vluxei n65536)
 
-# vqgemv: FUSED VQ-GEMV (AQLM/VPTQ 2-codebook decode fused into GEMV)
-macro(add_vqgemv variant vname kd nd)
-  set(target_name vqgemv-${vname}-K${kd}-N${nd})
-  add_snitch_test(${target_name} vqgemv/main.c)
+# vqgemv: FUSED VQ-GEMV (AQLM/VPTQ 2-codebook decode fused into GEMV).
+# sp-fmatmul layout: one main per arm (main-vlxblk.c / main-rvv.c), kernel
+# in vqgemv/kernel/, config from the generated DATAHEADER
+# (vqgemv/script/gen_data.py -> data/data_<cfg>.h; the header carries the
+# K/N/CB_D/CBN parameters, so no size macros).
+# Paper configs (BENCHMARK_PLAN 2026-09-07 ruling): P=N=128 tile,
+# aqlm = AQLM 2x8 (CB_D=8, CBN=256, u8 idx), vptq = VPTQ v16 (CB_D=16,
+# CBN=4096, u16 idx).
+macro(add_vqgemv arm cfg)
+  set(target_name vqgemv-${arm}-${cfg})
+  add_snitch_test(${target_name} vqgemv/main-${arm}.c)
   target_link_libraries(test-${SNITCH_TEST_PREFIX}${target_name} benchmark ${SNITCH_RUNTIME})
-  target_compile_definitions(test-${SNITCH_TEST_PREFIX}${target_name} PUBLIC VARIANT=${variant} KDIM=${kd} NDIM=${nd} PRINT_RESULT USE_CACHE=${USE_CACHE} PRINT_UART=${PRINT_UART})
+  target_compile_definitions(test-${SNITCH_TEST_PREFIX}${target_name} PUBLIC DATAHEADER="data/data_${cfg}.h" PRINT_RESULT USE_CACHE=${USE_CACHE} PRINT_UART=${PRINT_UART})
 endmacro()
-add_vqgemv(1 vlxblk 128 512)
-add_vqgemv(0 rvv 128 512)
-add_vqgemv(1 vlxblk 512 2048)
-add_vqgemv(0 rvv 512 2048)
-# paper configs (BENCHMARK_PLAN 2026-09-07 ruling): P=N=128 tile,
-# AQLM 2x8 (CB_D=8, CBN=256, u8 idx) and VPTQ v16 (CB_D=16, CBN=4096, u16 idx)
-macro(add_vqgemv_cfg variant vname cfg cbd cbn kd nd)
-  set(target_name vqgemv-${vname}-${cfg})
-  add_snitch_test(${target_name} vqgemv/main.c)
-  target_link_libraries(test-${SNITCH_TEST_PREFIX}${target_name} benchmark ${SNITCH_RUNTIME})
-  target_compile_definitions(test-${SNITCH_TEST_PREFIX}${target_name} PUBLIC VARIANT=${variant} CB_D=${cbd} CBN=${cbn} KDIM=${kd} NDIM=${nd} PRINT_RESULT USE_CACHE=${USE_CACHE} PRINT_UART=${PRINT_UART})
-endmacro()
-add_vqgemv_cfg(1 vlxblk aqlm 8 256 128 128)
-add_vqgemv_cfg(0 rvv aqlm 8 256 128 128)
-add_vqgemv_cfg(1 vlxblk vptq 16 4096 128 128)
-add_vqgemv_cfg(0 rvv vptq 16 4096 128 128)
+add_vqgemv(vlxblk aqlm)
+add_vqgemv(rvv aqlm)
+add_vqgemv(vlxblk vptq)
+add_vqgemv(rvv vptq)
 
-# vqgemm: fused VQ-GEMM, m-tiled (paper configs, M=K=N=128)
-macro(add_vqgemm_cfg variant vname cfg cbd cbn)
-  set(target_name vqgemm-${vname}-${cfg})
-  add_snitch_test(${target_name} vqgemm/main.c)
-  target_link_libraries(test-${SNITCH_TEST_PREFIX}${target_name} benchmark ${SNITCH_RUNTIME})
-  target_compile_definitions(test-${SNITCH_TEST_PREFIX}${target_name} PUBLIC VARIANT=${variant} CB_D=${cbd} CBN=${cbn} MDIM=128 KDIM=128 NDIM=128 PRINT_RESULT USE_CACHE=${USE_CACHE} PRINT_UART=${PRINT_UART})
-endmacro()
-add_vqgemm_cfg(1 vlxblk aqlm 8 256)
-add_vqgemm_cfg(0 rvv aqlm 8 256)
-add_vqgemm_cfg(1 vlxblk vptq 16 4096)
-add_vqgemm_cfg(0 rvv vptq 16 4096)
+# "# vqgemm: fused VQ-GEMM, m-tiled (paper configs, M=K=N=128)" through the
+# four add_vqgemm_cfg(...) lines). Target names are unchanged:
+#   vqgemm-vlxblk-aqlm  vqgemm-rvv-aqlm  vqgemm-vlxblk-vptq  vqgemm-rvv-vptq
+# Regenerate the data headers first: python3 vqgemm/script/gen_data.py
 
-# nbforce: GROMACS cluster-pair force, ADH-sized domain (paper config)
-macro(add_nbforce variant vname)
-  set(target_name nbforce-${vname})
-  add_snitch_test(${target_name} nbforce/main.c)
+# vqgemm: fused VQ-GEMM, m-tiled (AQLM/VPTQ 2-codebook decode fused into
+# the matrix product; 4 output rows per tile share one decoded row).
+# sp-fmatmul layout like vqgemv: one main per arm (main-vlxblk.c /
+# main-rvv.c), kernels in vqgemm/kernel/, config from the generated
+# DATAHEADER (vqgemm/script/gen_data.py -> data/data_<cfg>.h; the header
+# carries the M/N/K/CB_D/CBN parameters, so no size macros).
+# Paper configs (M=N=K=128): aqlm = AQLM 2x8 (CB_D=8, CBN=256, u8 idx),
+# vptq = VPTQ v16 (CB_D=16, CBN=4096, u16 idx).
+macro(add_vqgemm arm cfg)
+  set(target_name vqgemm-${arm}-${cfg})
+  add_snitch_test(${target_name} vqgemm/main-${arm}.c)
   target_link_libraries(test-${SNITCH_TEST_PREFIX}${target_name} benchmark ${SNITCH_RUNTIME})
-  target_compile_definitions(test-${SNITCH_TEST_PREFIX}${target_name} PUBLIC VARIANT=${variant} PRINT_RESULT USE_CACHE=${USE_CACHE} PRINT_UART=${PRINT_UART})
+  target_compile_definitions(test-${SNITCH_TEST_PREFIX}${target_name} PUBLIC DATAHEADER="data/data_${cfg}.h" PRINT_RESULT USE_CACHE=${USE_CACHE} PRINT_UART=${PRINT_UART})
 endmacro()
-add_nbforce(1 vlxblk)
-add_nbforce(0 rvv)
+add_vqgemm(vlxblk aqlm)
+add_vqgemm(rvv aqlm)
+add_vqgemm(vlxblk vptq)
+add_vqgemm(rvv vptq)
+
+# nbforce: GROMACS cluster-pair force, ADH-sized domain (paper config).
+# sp-fmatmul layout: one main per arm (main-vlxblk.c / main-rvv.c), kernel
+# in nbforce/kernel/, config from the generated DATAHEADER
+# (nbforce/script/gen_data.py -> data/data_<cfg>.h; the header carries the
+# NC_DOM/NC_TILE/LIST/WINDOW/CUT2 parameters and the literal pair list, so
+# no size macros).
+macro(add_nbforce arm cfg)
+  set(target_name nbforce-${arm})
+  add_snitch_test(${target_name} nbforce/main-${arm}.c)
+  target_link_libraries(test-${SNITCH_TEST_PREFIX}${target_name} benchmark ${SNITCH_RUNTIME})
+  target_compile_definitions(test-${SNITCH_TEST_PREFIX}${target_name} PUBLIC DATAHEADER="data/data_${cfg}.h" PRINT_RESULT USE_CACHE=${USE_CACHE} PRINT_UART=${PRINT_UART})
+endmacro()
+add_nbforce(vlxblk adh)
+add_nbforce(rvv adh)
 
 # VLXBLK ISA suite through the benchmark harness (riscvTests glue lacks set_eoc)
 add_snitch_test(vlxblk-isa vlxblk-isa/main.c)

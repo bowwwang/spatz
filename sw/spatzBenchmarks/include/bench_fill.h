@@ -60,9 +60,8 @@ static inline void bench_fill_rep(void *buf, uint32_t n_bytes,
 // Vector zero-fill (replaces scalar memset on MiB buffers).
 static inline void bench_fill_zero(void *buf, uint32_t n_bytes) {
   uint32_t *d = (uint32_t *)buf;
-  asm volatile("vsetvli zero, %0, e32, m8, ta, ma\n"
-               "vmv.v.i v8, 0" ::"r"(128u)
-               : "v8", "v9", "v10", "v11", "v12", "v13", "v14", "v15");
+  asm volatile("vsetvli zero, %0, e32, m8, ta, ma" ::"r"(128u));
+  asm volatile("vmv.v.i v8, 0");
   uint32_t c = n_bytes / 4u;
   while (c >= 8u) { // vector stores only while >= 32 B (erratum #1)
     uint32_t vl;
