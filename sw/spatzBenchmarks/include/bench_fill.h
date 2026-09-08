@@ -37,7 +37,10 @@ static inline void bench_fill_rep(void *buf, uint32_t n_bytes,
       chunk = n - filled;
     const uint32_t *s = a;
     uint32_t *d = a + filled;
-    for (uint32_t c = chunk; c;) {
+    uint32_t c = chunk;
+    // Vector copies only while >= 8 words (32 B): a vector store of
+    // vl*4 < 32 B leaves cache ports idle and HANGS (erratum #1).
+    while (c >= 8u) {
       uint32_t vl;
       asm volatile("vsetvli %0, %1, e32, m8, ta, ma" : "=r"(vl) : "r"(c));
       asm volatile("vle32.v v8, (%0)" ::"r"(s)
@@ -48,6 +51,8 @@ static inline void bench_fill_rep(void *buf, uint32_t n_bytes,
       d += vl;
       c -= vl;
     }
+    while (c--) // 1-7 word tail: scalar (avoids the sub-32-B vse)
+      *d++ = *s++;
     filled += chunk;
   }
 }
@@ -58,13 +63,16 @@ static inline void bench_fill_zero(void *buf, uint32_t n_bytes) {
   asm volatile("vsetvli zero, %0, e32, m8, ta, ma\n"
                "vmv.v.i v8, 0" ::"r"(128u)
                : "v8", "v9", "v10", "v11", "v12", "v13", "v14", "v15");
-  for (uint32_t c = n_bytes / 4u; c;) {
+  uint32_t c = n_bytes / 4u;
+  while (c >= 8u) { // vector stores only while >= 32 B (erratum #1)
     uint32_t vl;
     asm volatile("vsetvli %0, %1, e32, m8, ta, ma" : "=r"(vl) : "r"(c));
     asm volatile("vse32.v v8, (%0)" ::"r"(d) : "memory");
     d += vl;
     c -= vl;
   }
+  while (c--) // 1-7 word tail: scalar
+    *d++ = 0u;
 }
 
 #endif // BENCH_FILL_H
