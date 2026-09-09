@@ -291,20 +291,24 @@ add_radix(vsuxei n65536)
 # pr-gather: PageRank pull, D=1 x e64 (index-semantics regime point).
 # sp-fmatmul layout: one main per arm (main-vlxblk.c / main-vluxei.c),
 # kernels in pr-gather/kernel/, config from the generated DATAHEADER
-# (pr-gather/script/gen_data.py -> data/data_n<nv>.h; the header carries
-# NV/NACT/DEG, base/damp and the expected output, so no size macros).
+# (pr-gather/script/gen_data.py -> data/data_n<nv>_a<nact>.h; the header
+# carries NV/NACT/DEG, damp, the seed vector, ALL input arrays literally
+# and the expected output, so no size macros and no on-core datagen).
 # The baseline arm keeps its historical `vluxei` file/target name (batch
 # vluxei32 hangs on the first missing gather (erratum #3) and misses are
 # intrinsic here (512 KiB contrib > L1).
-# Paper config (BENCHMARK_PLAN 2026-09-07): NV=65,536, NACT=4,096, DEG=16.
+# Paper config (BENCHMARK_PLAN 2026-09-07): NV=65,536, NACT=4,096, DEG=16;
+# a512 is the quick development config on the same table.
 macro(add_prg arm cfg)
   set(target_name pr-gather-${arm}-${cfg})
   add_snitch_test(${target_name} pr-gather/main-${arm}.c)
   target_link_libraries(test-${SNITCH_TEST_PREFIX}${target_name} benchmark ${SNITCH_RUNTIME})
   target_compile_definitions(test-${SNITCH_TEST_PREFIX}${target_name} PUBLIC DATAHEADER="data/data_${cfg}.h" PRINT_RESULT USE_CACHE=${USE_CACHE} PRINT_UART=${PRINT_UART})
 endmacro()
-add_prg(vlxblk n65536)
-add_prg(vluxei n65536)
+add_prg(vlxblk n65536_a512)
+add_prg(vlxblk n8192_a512)   # L1-resident reference (64 KiB table)
+add_prg(vlxblk n65536_a4096)
+add_prg(vluxei n65536_a4096)
 
 # vqgemv: FUSED VQ-GEMV (AQLM/VPTQ 2-codebook decode fused into GEMV).
 # sp-fmatmul layout: one main per arm (main-vlxblk.c / main-rvv.c), kernel

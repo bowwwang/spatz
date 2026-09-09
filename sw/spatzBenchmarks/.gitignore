@@ -1,1 +1,3 @@
 */data/data*.h
+# python bytecode from the data generators
+__pycache__/

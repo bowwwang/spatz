@@ -2,11 +2,11 @@
 // Licensed under the Apache License, Version 2.0, see LICENSE for details.
 // SPDX-License-Identifier: Apache-2.0
 
-// pr-gather, baseline arm. Identical data path to main-vlxblk.c; only the
-// kernel differs: the SCALAR pull loop (kernel/pr-scalar.c), because the
-// vluxei32 element-vector translation hangs on the first missing gather
-// (erratum #3). The file/target keep the historical `vluxei` name so the
-// batch scripts' target name pr-gather-vluxei-n<nv> is unchanged.
+// pr-gather, baseline arm (scalar gather; the batch vluxei32 baseline hangs
+// on the first missing gather, erratum #3, and misses are intrinsic here -
+// the target keeps its historical `vluxei` name). All data is literal in
+// the generated DATAHEADER (script/gen_data.py); nothing is generated
+// on-core.
 
 #include <benchmark.h>
 #include <snrt.h>
@@ -15,57 +15,34 @@
 #include DATAHEADER
 #include "kernel/pr-scalar.c"
 
-#include "bench_fill.h"
-
-// Contribution fill: exact dyadic head (multiples of 2^-16 in
-// (0, 2^-5], prime-multiplier scramble), then vector-tiled to the full
-// table. Mirrored bit-exactly in gen_data.py.
-static void fill_contrib(double *contrib, const unsigned int n,
-                         const unsigned int head) {
-  const unsigned int h = n < head ? n : head;
-  for (unsigned int i = 0; i < h; ++i)
-    contrib[i] = (double)(((i * 211u) & 2047u) + 1u) / 65536.0;
-  if (n > h)
-    bench_fill_rep(contrib, n * 8u, h * 8u);
-}
-
-// Neighbor ids: multiplicative hash in u16 lanes masked to NV (pow2),
-// vector-generated 128 ids per step from the seed vector 0..127:
-// nbr[i] = ((i * 0x9E3779B1) mod 2^16) & (NV - 1). Mirrored in
-// gen_data.py (n is a multiple of 128 and NV a power of two by
-// construction there).
-static void fill_nbr(uint16_t *nbr, const uint16_t *seed,
-                     const unsigned int n, const unsigned int mask) {
-  for (unsigned int c = 0; c < n; c += 128) {
-    asm volatile("vsetvli zero, %0, e16, m4, ta, ma" ::"r"(128u));
-    asm volatile("vle16.v v8, (%0)" ::"r"(seed) : "memory");
-    asm volatile("vadd.vx v8, v8, %0" ::"r"(c));
-    asm volatile("vmul.vx v8, v8, %0" ::"r"(2654435761u));
-    asm volatile("vand.vx v8, v8, %0" ::"r"(mask));
-    asm volatile("vse16.v v8, (%0)" ::"r"(nbr + c) : "memory");
-  }
-}
-
-// Verify all NACT outputs against the float64 sequential sums from
-// gen_data.py. The scalar arm sums in the same order as the generator;
-// the shared 1e-9 relative tolerance (kept identical to the vlxblk arm,
-// whose vfredosum association differs in final ULPs) still detects a
-// single wrong index, which perturbs the sum by >= ~6e-5 relative.
-int verify_output(const double *out, const double *expected,
-                  const unsigned int n) {
+// Compare outputs against the generated expectation in integer ULPs
+// (fp64 bit patterns read with integer loads). 2^20 ULPs ~ 2.3e-10
+// relative absorbs the association difference between the scalar arm
+// (base + damp * sum) and the generator's order (base + sum(damp * c));
+// one wrong index perturbs a sum by >= ~1e-2 relative.
+static int verify_output(const double *out, const uint64_t *expected_bits,
+                         const unsigned int n) {
+  const uint32_t *ow = (const uint32_t *)out;
+  const uint32_t *ew = (const uint32_t *)expected_bits;
+  const int64_t tol = (int64_t)1 << 20;
+  unsigned int fails = 0;
   for (unsigned int v = 0; v < n; ++v) {
-    const double got = out[v];
-    const double exp = expected[v];
-    double err = got - exp;
-    if (err < 0)
-      err = -err;
-    const double mag = exp < 0 ? -exp : exp;
-    if (err > 1e-9 * mag + 1e-15) {
-      printf("FAILED v=%u got=%f exp=%f\n", v, got, exp);
-      return v == 0 ? -1 : (int)v;
+    const uint64_t got = ((uint64_t)ow[2 * v + 1] << 32) | ow[2 * v];
+    const uint64_t exp = ((uint64_t)ew[2 * v + 1] << 32) | ew[2 * v];
+    int64_t d = (int64_t)(got - exp);
+    if (d < 0)
+      d = -d;
+    if (d > tol) {
+      if (fails < 8)
+        printf("FAILED v=%u got=0x%08x%08x exp=0x%08x%08x\n", v,
+               (unsigned)(got >> 32), (unsigned)got, (unsigned)(exp >> 32),
+               (unsigned)exp);
+      fails++;
     }
   }
-  return 0;
+  if (fails)
+    printf("FAILED total=%u/%u\n", fails, n);
+  return fails > 255 ? 255 : (int)fails;
 }
 
 int main() {
@@ -89,26 +66,17 @@ int main() {
   unsigned int timer = 0;
 
   if (cid == 0) {
-    fill_contrib(pr_contrib, pr_l.NV, pr_l.HEAD);
-    fill_nbr(pr_nbr, pr_seed16, pr_l.NACT * pr_l.DEG, pr_l.NV - 1u);
-    bench_fill_zero(pr_out, sizeof(pr_out));
-
-#if USE_CACHE == 1
-    l1d_flush();
-    l1d_wait();
-#endif
-
     // Start timer
     timer = benchmark_get_cycle();
 
-    pr_scalar(pr_out, pr_contrib, pr_nbr, pr_l.NACT, pr_l.DEG, pr_base,
-              pr_damp);
+    pr_scalar(pr_out, (const double *)pr_contrib_bits, pr_nbr, pr_l.NACT,
+              pr_l.DEG, pr_seed[0], pr_damp);
     asm volatile("fence" ::: "memory");
 
     // End timer
     timer = benchmark_get_cycle() - timer;
 
-    error = verify_output(pr_out, pr_expected, pr_l.NACT);
+    error = verify_output(pr_out, pr_expected_bits, pr_l.NACT);
 
 #ifdef PRINT_RESULT
     printf("pr-gather scalar nv=%u nact=%u deg=%u cache=%d: took %u cycles "
