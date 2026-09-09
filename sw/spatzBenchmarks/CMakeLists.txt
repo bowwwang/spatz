@@ -242,21 +242,29 @@ add_snitch_test(isaprobe isaprobe/main.c)
 target_link_libraries(test-${SNITCH_TEST_PREFIX}isaprobe benchmark ${SNITCH_RUNTIME})
 target_compile_definitions(test-${SNITCH_TEST_PREFIX}isaprobe PUBLIC PRINT_RESULT USE_CACHE=${USE_CACHE} PRINT_UART=${PRINT_UART})
 
-# slsint8: SparseLengthsSum, int8 deployed config (paper: sls/int8).
-# sp-fmatmul layout: one main per arm (main-vlxblk.c / main-vle.c), kernels
-# in slsint8/kernel/, config from the generated DATAHEADER
-# (slsint8/script/gen_data.py -> data/data_<cfg>.h; the header carries the
-# NB/LP/ROW_D/NROWS parameters, so no size macros).
-# Paper config: NB=2048 bags x LP=40 lookups, 65,536 rows x 32 B (u16 id
-# ceiling, 2 MiB table) + fp16 (scale, bias) per row.
-macro(add_slsint8 arm cfg)
-  set(target_name slsint8-${arm})
-  add_snitch_test(${target_name} slsint8/main-${arm}.c)
+# sls: SparseLengthsSum / embedding-bag pooling (paper points sls-1 = fp16 rows,
+# 32-B blocks; sls-2 = fp32 rows, 128-B blocks). sp-fmatmul layout: one main per
+# arm and dtype (sls/main-vlxblk.c fp16, main-vlxblk32.c fp32, main-vle.c fp16
+# baseline), kernels in sls/kernel/, config from the generated DATAHEADER
+# (sls/script/gen_data.py --dtype fp16|fp32 --NROWS ... -> data/data_<dtype>_n<rows>.h).
+# NB=64 bags while developing; paper NB=2048.
+macro(add_sls arm mainfile cfg)
+  set(target_name sls-${arm}-${cfg})
+  add_snitch_test(${target_name} sls/${mainfile})
   target_link_libraries(test-${SNITCH_TEST_PREFIX}${target_name} benchmark ${SNITCH_RUNTIME})
   target_compile_definitions(test-${SNITCH_TEST_PREFIX}${target_name} PUBLIC DATAHEADER="data/data_${cfg}.h" PRINT_RESULT USE_CACHE=${USE_CACHE} PRINT_UART=${PRINT_UART})
 endmacro()
-add_slsint8(vlxblk n65536)
-add_slsint8(vle n65536)
+# sls-1 (fp16, 32-B rows): L1-resident 128 KiB table and the paper's 2 MiB table
+add_sls(vlxblk main-vlxblk.c fp16_n4096)
+add_sls(vlxblk main-vlxblk.c fp16_n65536)
+add_sls(vle main-vle.c fp16_n4096)
+add_sls(vle main-vle.c fp16_n65536)
+# sls-2 (fp32, 128-B rows): L1-resident 128 KiB table and the paper's 2 MiB table
+add_sls(vlxblk32 main-vlxblk32.c fp32_n1024)
+add_sls(vlxblk32 main-vlxblk32.c fp32_n16384)
+# hang-locator builds (DBG_EVERY progress print; never for measurement)
+add_sls(vlxblk main-vlxblk.c fp16_n4096_dbg)
+add_sls(vle main-vle.c fp16_n4096_dbg)
 
 # radix-scatter: DB partitioning record scatter (vsxblk vs vsoxei32 baseline).
 # sp-fmatmul layout: one main per arm (main-vsxblk.c / main-vsuxei.c), kernels
