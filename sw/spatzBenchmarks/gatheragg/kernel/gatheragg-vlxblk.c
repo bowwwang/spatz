@@ -2,65 +2,79 @@
 // Licensed under the Apache License, Version 2.0, see LICENSE for details.
 // SPDX-License-Identifier: Apache-2.0
 
-// gatheragg, VLXBLK arm: out[b, :] = sum_l t[idx[b, l], :] (indexed-row
-// gather + sum pooling; DLRM SparseLengthsSum fp32 at row_d = 32, GNN
-// pull-mode neighbour aggregation at row_d = 64).
+// gatheragg (paper row "gnnagg"), VLXBLK arm: GNN pull-mode neighbour
+// aggregation, out[b, :] = sum_l t[idx[b, l], :] over lp neighbours of
+// 64 fp32 (one 256-B row = one e32 m2 register pair).
 //
-// Gather-across-units (the proven vqgemv pattern): upg = 128 / row_d
-// destinations are pooled simultaneously -- iteration l gathers the l-th
-// row of all upg units into one full m4 group (one index per unit) and
-// accumulates with a whole-group vfadd. NO register-group slicing: the
-// old per-row m1/m2-slice + switch-fallthrough pattern hangs (d32) or
-// zeroes (d64) in RTL.
+// Gather-across-nodes: the 4 nodes of one e32 m8 group are pooled
+// simultaneously - round l gathers the l-th neighbour row of all 4 nodes
+// with ONE vlxblkei16 (4 blocks of 256 B = 1 KiB, one index per node) and
+// accumulates with ONE whole-group vfadd into the m8 accumulator v24-31,
+// whose 4 quarters are the 4 nodes' outputs (one 1-KiB vse32 per group).
+// Every load group is consumed at the LMUL it was loaded with (erratum
+// #7: hazards are tracked per base register only).
 //
-// m4, not m8: no PASSING kernel computes at m8 (m8 vfadd is the remaining
-// hang suspect after vlse16 was exonerated; vqdecode proves m8 GATHERS are
-// fine). All shapes here match the proven vqgemv/vqgemm m4 patterns. The
-// shapes are identical for d32 / d64 (vl = upg * row_d = 128 e32), so one
-// function serves both geometries.
-//
-// STATUS: this arm HANGS in RTL (open bug A, late hang at ~87.5%); the
-// instruction sequence and register allocation are kept verbatim from the
-// version under waveform debug. The vle baseline is verified.
+// Two-round software pipeline per group: rows of even rounds land in set
+// A (v8-15), odd rounds in set B (v16-23); the next round's index load
+// (16 ids = 32 B, the first 4 used; the transposed index layout makes
+// round l's 4 ids contiguous) and gather are issued before the current
+// round's add. Round 0 initializes the accumulator with vfmul by 1.0 (no
+// zeroing). Requirements: row_d == 64, nb a multiple of 4, lp >= 2, idx
+// padded by >= 16 ids.
 
 #include "gatheragg-vlxblk.h"
-#include <stdio.h>
 
 void agg_vlxblk(float *out, const float *t, const uint16_t *idx,
                 const unsigned int nb, const unsigned int row_d,
-                const unsigned int lp, const unsigned int dbg_every) {
-  const unsigned int upg = 128 / row_d; // units per m4 group (4x d32 / 2x d64)
-  const unsigned int ec = upg * row_d;  // e32 elements per group (= 128)
+                const unsigned int lp) {
+  const unsigned int upg = 4u;     // nodes per m8 group (4 x 64 = 256 lanes)
+  const unsigned int ec = 256u;    // e32 elements per group
+  const unsigned int idx_el = 16u; // ids per index load (32 B), 4 used
+  float fone;
 
+  asm volatile("fmv.w.x %0, %1" : "=f"(fone) : "r"(0x3f800000u));
   asm volatile("vsetblklen %0" ::"r"(row_d));
 
-  // Accumulator v16-v19 (m4) holds upg units side by side; the gathered
-  // rows land in v8-v11 (m4) in the same unit positions, so the
-  // accumulate is one whole-group vfadd.
-  for (unsigned int b = 0; b < nb; b += upg) {
-    // Hang locator for the waveform session (bug A). dbg config: every 32
-    // bags = 8 d32 groups = 320 gathers; 0 in measurement configs.
-    if (dbg_every && (b % dbg_every) == 0)
-      printf("DBGG %u\n", b);
+  for (unsigned int g = 0; g < nb; g += upg) {
+    const uint16_t *bi = idx + g * lp; // group stride = lp * upg ids
 
-    const uint16_t *bi = idx + b * lp;
+    // prologue: round 0 -> A, round 1 -> B
+    asm volatile("vsetvli zero, %0, e16, m1, ta, ma" ::"r"(idx_el));
+    asm volatile("vle16.v v2, (%0)" ::"r"(bi) : "memory");
+    asm volatile("vsetvli zero, %0, e32, m8, ta, ma" ::"r"(ec));
+    asm volatile("vlxblkei16.v v8, (%0), v2" ::"r"(t) : "memory");
+    asm volatile("vsetvli zero, %0, e16, m1, ta, ma" ::"r"(idx_el));
+    asm volatile("vle16.v v3, (%0)" ::"r"(bi + upg) : "memory");
+    asm volatile("vsetvli zero, %0, e32, m8, ta, ma" ::"r"(ec));
+    asm volatile("vlxblkei16.v v16, (%0), v3" ::"r"(t) : "memory");
 
-    asm volatile("vsetvli zero, %0, e32, m4, ta, ma" ::"r"(ec));
-    asm volatile("vmv.v.i v16, 0");
+    // acc = round 0
+    asm volatile("vfmul.vf v24, v8, %0" ::"f"(fone));
 
-    for (unsigned int l = 0; l < lp; ++l) {
-      // Index layout is TRANSPOSED (round-major within each unit group):
-      // round l's upg indices are contiguous -> plain vle16 (vlse16
-      // strided loads hang on this port; see ISA probe).
-      asm volatile("vsetvli zero, %0, e16, m1, ta, ma" ::"r"(upg));
-      asm volatile("vle16.v v2, (%0)" ::"r"(bi + l * upg) : "memory");
+    for (unsigned int l = 1; l < lp; l += 2) {
+      // round l is in B, round l+1 (if any) goes to A
+      if (l + 1 < lp) {
+        asm volatile("vsetvli zero, %0, e16, m1, ta, ma" ::"r"(idx_el));
+        asm volatile("vle16.v v2, (%0)" ::"r"(bi + (l + 1) * upg) : "memory");
+        asm volatile("vsetvli zero, %0, e32, m8, ta, ma" ::"r"(ec));
+        asm volatile("vlxblkei16.v v8, (%0), v2" ::"r"(t) : "memory");
+      }
+      asm volatile("vsetvli zero, %0, e32, m8, ta, ma" ::"r"(ec));
+      asm volatile("vfadd.vv v24, v24, v16");
 
-      asm volatile("vsetvli zero, %0, e32, m4, ta, ma" ::"r"(ec));
-      asm volatile("vlxblkei16.v v8, (%0), v2" ::"r"(t) : "memory");
-      asm volatile("vfadd.vv v16, v16, v8");
+      if (l + 2 < lp) {
+        asm volatile("vsetvli zero, %0, e16, m1, ta, ma" ::"r"(idx_el));
+        asm volatile("vle16.v v3, (%0)" ::"r"(bi + (l + 2) * upg) : "memory");
+        asm volatile("vsetvli zero, %0, e32, m8, ta, ma" ::"r"(ec));
+        asm volatile("vlxblkei16.v v16, (%0), v3" ::"r"(t) : "memory");
+      }
+      if (l + 1 < lp) {
+        asm volatile("vsetvli zero, %0, e32, m8, ta, ma" ::"r"(ec));
+        asm volatile("vfadd.vv v24, v24, v8");
+      }
     }
 
-    asm volatile("vsetvli zero, %0, e32, m4, ta, ma" ::"r"(ec));
-    asm volatile("vse32.v v16, (%0)" ::"r"(out + b * row_d) : "memory");
+    asm volatile("vsetvli zero, %0, e32, m8, ta, ma" ::"r"(ec));
+    asm volatile("vse32.v v24, (%0)" ::"r"(out + g * row_d) : "memory");
   }
 }

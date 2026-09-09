@@ -7,10 +7,13 @@
 
 #include <stdint.h>
 
-// Top-K sparse-attention V aggregation, VLXBLK arm: per selected token one
-// block gather of the whole hd-element fp16 row (vlxblkei16, blk_len = hd)
-// in its natural m4 position and one vfmacc.vf into the m4 accumulator.
-// out[q, :] = sum_k p[q, k] * pool[idx[q, k], :]
+// Top-K sparse-attention V aggregation (paper row "spattn"), VLXBLK arm v1:
+//   out[q, :] = sum_k p[q, k] * pool[idx[q, k], :]   over 256-B fp16 rows.
+// Two tokens per step: one e16 m8 block gather of two rows (blk_len = hd),
+// scaled by a two-half score vector at m8 and folded into the m4
+// accumulator; two-round pipeline. Scores are fp16, loaded with flh one
+// step ahead (hp-fmatmul idiom). idx is row-major with >= 16 ids of
+// padding; hd == 128, topk even >= 4.
 void attn_vlxblk(__fp16 *out, const __fp16 *pool, const uint16_t *idx,
                  const __fp16 *p, const unsigned int nq,
                  const unsigned int topk, const unsigned int hd);

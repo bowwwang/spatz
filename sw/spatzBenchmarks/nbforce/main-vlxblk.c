@@ -2,10 +2,9 @@
 // Licensed under the Apache License, Version 2.0, see LICENSE for details.
 // SPDX-License-Identifier: Apache-2.0
 
-// nbforce, VLXBLK arm. Pair list and expected forces from the generated
-// DATAHEADER; the four field arrays (x, y, z, q; 380 KiB each) are filled
-// on-core from the closed-form pattern the generator mirrors (see
-// script/gen_data.py).
+// nbforce, VLXBLK arm. All data (four X4 field arrays, pair list, expected
+// forces) is literal in the generated DATAHEADER (script/gen_data.py);
+// nothing is generated on-core.
 
 #include <benchmark.h>
 #include <snrt.h>
@@ -14,37 +13,36 @@
 #include DATAHEADER
 #include "kernel/nbforce-vlxblk.c"
 
-#include "bench_fill.h"
-
-// Field fill: coordinates/charges in [0, 4) as exact multiples of 2^-8
-// (prime-multiplier pattern head of HEAD f32, then vector-tiled to the
-// full array). Mirrored bit-exactly in gen_data.py.
-static void fill_field(float *f, const unsigned int n, const unsigned int head,
-                       const unsigned int mult) {
-  const unsigned int h = n < head ? n : head;
-  for (unsigned int i = 0; i < h; ++i)
-    f[i] = 0.00390625f * (float)((i * mult) & 1023u);
-  if (n > h)
-    bench_fill_rep(f, n * 4u, h * 4u);
+// fp32 from its bit pattern through an integer load + fmv.w.x (no FPU
+// loads after the kernel's vector traffic).
+static inline float f32_from_bits(const uint32_t bits) {
+  float f;
+  asm volatile("fmv.w.x %0, %1" : "=f"(f) : "r"(bits));
+  return f;
 }
 
 // Verify ALL NC_TILE x 4 atoms x 3 components against the float64
 // reference from gen_data.py. Tolerance 1% + 0.01 abs: fp32 accumulation
 // over LIST*4 j-atoms in vfredusum tree order, with cutoff clamps.
-int verify_output(const float *f, const float *expected,
-                  const unsigned int n) {
+static int verify_output(const float *f, const uint32_t *expected_bits,
+                         const unsigned int n) {
+  const uint32_t *fw = (const uint32_t *)f;
+  unsigned int fails = 0;
   for (unsigned int i = 0; i < n; ++i) {
-    float got = f[i];
-    float exp = expected[i];
-    float err = got > exp ? got - exp : exp - got;
-    float mag = exp < 0 ? -exp : exp;
+    const float got = f32_from_bits(fw[i]);
+    const float exp = f32_from_bits(expected_bits[i]);
+    const float err = got > exp ? got - exp : exp - got;
+    const float mag = exp < 0 ? -exp : exp;
     if (err > 0.01f + 0.01f * mag) {
-      printf("FAILED c=%u a=%u d=%u got=%f exp=%f\n", i / 12, (i % 12) / 3,
-             i % 3, got, exp);
-      return i == 0 ? -1 : (int)i;
+      if (fails < 8)
+        printf("FAILED c=%u a=%u d=%u got=0x%08x exp=0x%08x\n", i / 12,
+               (i % 12) / 3, i % 3, (unsigned)fw[i], (unsigned)expected_bits[i]);
+      fails++;
     }
   }
-  return 0;
+  if (fails)
+    printf("FAILED total=%u/%u\n", fails, n);
+  return fails > 255 ? 255 : (int)fails;
 }
 
 int main() {
@@ -68,29 +66,18 @@ int main() {
   unsigned int timer = 0;
 
   if (cid == 0) {
-    const unsigned int n_atoms = nb_l.NC_DOM * 4u;
-    fill_field(nb_x, n_atoms, nb_l.HEAD, 37u);
-    fill_field(nb_y, n_atoms, nb_l.HEAD, 53u);
-    fill_field(nb_z, n_atoms, nb_l.HEAD, 71u);
-    fill_field(nb_q, n_atoms, nb_l.HEAD, 89u);
-    bench_fill_zero(nb_f, sizeof(nb_f));
-
-#if USE_CACHE == 1
-    l1d_flush();
-    l1d_wait();
-#endif
-
     // Start timer
     timer = benchmark_get_cycle();
 
-    nbforce_vlxblk(nb_f, nb_x, nb_y, nb_z, nb_q, nb_list, nb_l.NC_TILE,
-                   nb_l.LIST, nb_l.CUT2);
+    nbforce_vlxblk(nb_f, (const float *)nb_x_bits, (const float *)nb_y_bits,
+                   (const float *)nb_z_bits, (const float *)nb_q_bits, nb_list,
+                   nb_l.NC_TILE, nb_l.LIST, nb_l.CUT2_BITS);
     asm volatile("fence" ::: "memory");
 
     // End timer
     timer = benchmark_get_cycle() - timer;
 
-    error = verify_output(nb_f, nb_expected, nb_l.NC_TILE * 12u);
+    error = verify_output(nb_f, nb_expected_bits, nb_l.NC_TILE * 12u);
 
 #ifdef PRINT_RESULT
     printf("nbforce vlxblk nc=%u list=%u cache=%d: took %u cycles %s "

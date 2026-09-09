@@ -3,42 +3,32 @@
 # Licensed under the Apache License, Version 2.0, see LICENSE for details.
 # SPDX-License-Identifier: Apache-2.0
 
-# radix-scatter data generator: emits data/data_n<NREC>.h for the paper
-# config (BENCHMARK_PLAN 2026-09-07): NREC=65536 16-B records (RD=4 x e32),
-# FANOUT=256 partitions (8 radix bits, the SIGMOD'15 regime), 1 MiB dst.
+# radix-scatter data generator: emits data/data_n<NREC>.h
+#   paper config (BENCHMARK_PLAN 2026-09-07): NREC=65536 16-B records
+#   (RD=4 x e32), FANOUT=256 partitions (8 radix bits, the SIGMOD'15
+#   regime), 1 MiB src + 1 MiB dst; n8192 is the quick development config.
 #
-# Everything is closed-form and exact (integers), so nothing is random and
-# the header stays small: it carries the layer struct and the two 128-word
-# iota seeds of the on-core vector fills. The BIG arrays (src 1 MiB, dst
-# 1 MiB, slots 128 KiB, baseline staging 1 MiB) are NOT emitted; main
-# fills them on-core with vector loops that this script mirrors exactly:
+# A REAL radix partition of random keys: bucket = key >> (32 - 8), the
+# histogram + exclusive prefix sum give the bucket base offsets, and each
+# record's slot is its bucket base plus its rank among the records of that
+# bucket in input order (the two-pass formulation with precomputed
+# offsets; the offset computation is untimed setup for both arms). The
+# slot array is a permutation with sequential writes inside each bucket -
+# the locality structure of the real algorithm.
 #
-#   slot[r] = (r & (F-1)) * (NREC/F) + r/F    radix partition of synthetic
-#             keys that assign records round-robin to the F partitions
-#             (bucket = r mod F); the histogram + prefix-sum offsets then
-#             collapse to this closed form: a permutation with per-bucket
-#             sequential runs of NREC/F records (the real locality
-#             structure, 4 records per 64-B line).
-#   src[i]  = i                                unique payload words
-#   srcT[d * NREC + r] = 4r + d = src[r*4 + d] column-major staging of the
-#             SAME payload for the vsoxei32 baseline (erratum #2: strided
-#             vector loads corrupt one lane under cache misses).
-#   dst     = 0
-#
-# Check (exact, integer): dst[slot(r) * RD + d] == r * RD + d for every
-# sampled record r (every 4th + the last; sampling bounds the scalar-core
-# reference cost, a structural scatter bug hits sampled records too). The
-# checker recomputes slot(r) from the closed form in C, so no expected
-# array is needed; this script validates the same formula on the full
-# image.
+# Every array the kernels read is emitted literally (no on-core data
+# generation): rs_src (record word 0 = key, words 1..3 random payload),
+# rs_srcT (column-major staging of the same payload, baseline arm only:
+# strided vector loads corrupt one lane under misses, erratum #2),
+# rs_slot (u16, +64 zero padding), rs_dst zero. Check (exact, integer):
+# rs_dst[rs_slot[r]*RD + d] == rs_src[r*RD + d] for every sampled record
+# (every 4th + the last), so no expected array is needed.
 
 import argparse
 import pathlib
 import numpy as np
 
-RD = 4            # e32 elements per record (16-B records)
-FILL_CHUNK = 128  # elements per on-core fill iteration (e16 m4 / e32 m8)
-SEED_LEN = 128    # iota seeds of the vector fills
+RD = 4  # e32 elements per record (16-B records)
 
 
 def c_array(name, ctype, vals, fmt, align=64, data_section=True):
@@ -49,7 +39,7 @@ def c_array(name, ctype, vals, fmt, align=64, data_section=True):
     out = "static {} {}[{}] {} = {{\n".format(ctype, name, len(vals), attr)
     line = "   "
     for v in vals:
-        s = " " + fmt.format(v) + ","
+        s = " " + fmt(v) + ","
         if len(line) + len(s) > 78:
             out += line + "\n"
             line = "   "
@@ -58,74 +48,49 @@ def c_array(name, ctype, vals, fmt, align=64, data_section=True):
     return out
 
 
-def slots_closed_form(nrec, fanout_log2):
-    r = np.arange(nrec, dtype=np.uint32)
+def hex32(x):
+    return "0x{:08x}".format(int(x))
+
+
+def radix_slots(keys, fanout_log2):
+    bucket = (keys >> np.uint32(32 - fanout_log2)).astype(np.int64)
     fanout = 1 << fanout_log2
-    return ((r & (fanout - 1)) * (nrec // fanout) + (r >> fanout_log2)).astype(np.uint16)
+    hist = np.bincount(bucket, minlength=fanout)
+    base = np.concatenate([[0], np.cumsum(hist)[:-1]])  # exclusive prefix sum
+    order = np.argsort(bucket, kind="stable")           # input order within a bucket
+    rank = np.empty(len(keys), dtype=np.int64)
+    rank[order] = np.arange(len(keys)) - base[bucket[order]]
+    return (base[bucket] + rank).astype(np.uint16), hist
 
 
-def slots_on_core(nrec, fanout_log2, seed16):
-    # Mirror of main's vector loop, chunk by chunk in u16 arithmetic:
-    #   r = seed + c; bucket = r & (F-1); slot = (bucket << (log2 NREC -
-    #   log2 F)) | (r >> log2 F)
-    nrec_log2 = nrec.bit_length() - 1
+def emit(nrec, fanout_log2, out_dir, seed=42):
     fanout = 1 << fanout_log2
-    out = np.empty(nrec, dtype=np.uint16)
-    for c in range(0, nrec, FILL_CHUNK):
-        r = (seed16.astype(np.uint32) + c).astype(np.uint16)
-        bucket = r & np.uint16(fanout - 1)
-        out[c:c + FILL_CHUNK] = ((bucket << np.uint16(nrec_log2 - fanout_log2))
-                                 | (r >> np.uint16(fanout_log2))).astype(np.uint16)
-    return out
-
-
-def emit(nrec, fanout_log2, out_dir):
-    fanout = 1 << fanout_log2
-    assert nrec & (nrec - 1) == 0 and nrec >= fanout, \
-        "NREC must be a power of two and >= FANOUT (closed-form slots)"
     assert nrec <= 65536, "u16 slot ids"
-    assert nrec % FILL_CHUNK == 0, "on-core fills run in 128-element chunks"
-    assert nrec % 64 == 0, "kernels run 64 records per chunk"
+    assert nrec % 128 == 0, "kernels run two 64-record chunks per loop iteration"
+    rng = np.random.default_rng(seed)
 
-    seed16 = np.arange(SEED_LEN, dtype=np.uint16)
-    seed32 = np.arange(SEED_LEN, dtype=np.uint32)
-
-    slot = slots_closed_form(nrec, fanout_log2)
-    assert (slots_on_core(nrec, fanout_log2, seed16) == slot).all()
+    keys = rng.integers(0, 1 << 32, size=nrec, dtype=np.uint64).astype(np.uint32)
+    slot, hist = radix_slots(keys, fanout_log2)
     assert len(np.unique(slot)) == nrec, "slots must be a permutation"
 
-    # on-core fills: src[i] = i (e32 m8 chunks of seed + c), srcT = 4r + d
-    src = np.arange(nrec * RD, dtype=np.uint32)
-    src_core = np.concatenate([seed32 + c for c in range(0, nrec * RD, FILL_CHUNK)])
-    assert (src_core == src).all()
-    srcT = np.concatenate([((seed32 + c) << 2) + d
-                           for d in range(RD) for c in range(0, nrec, FILL_CHUNK)])
-    assert (srcT == src.reshape(nrec, RD).T.reshape(-1)).all()
+    src = np.empty((nrec, RD), dtype=np.uint32)
+    src[:, 0] = keys
+    src[:, 1:] = rng.integers(0, 1 << 32, size=(nrec, RD - 1), dtype=np.uint64).astype(np.uint32)
+    srcT = src.T.reshape(-1)
 
-    # full expected image and the C checker's formula on the sample set
-    expected = np.zeros((nrec, RD), dtype=np.uint32)
-    expected[slot] = src.reshape(nrec, RD)
-    sample = np.append(np.arange(0, nrec, 4), nrec - 1)
-    exp_rows = (sample[:, None] * RD + np.arange(RD)[None, :]).astype(np.uint32)
-    assert (expected[slot[sample]] == exp_rows).all()
+    # validate the check formula on the full image
+    image = np.zeros((nrec, RD), dtype=np.uint32)
+    image[slot] = src
+    assert (image[slot] == src).all()
 
     cfg = "n{}".format(nrec)
     s = ("// Copyright 2026 ETH Zurich and University of Bologna.\n"
          "// Licensed under the Apache License, Version 2.0, see LICENSE for details.\n"
          "// SPDX-License-Identifier: Apache-2.0\n\n"
          "// This file was generated automatically by radix-scatter/script/gen_data.py\n"
-         "// config: {} (NREC={}, RD={}, FANOUT={})\n"
-         "//\n"
-         "// Data contract (all closed-form, exact integers):\n"
-         "//   rs_slot[r] = (r & (F-1)) * (NREC/F) + r/F   generated ON-CORE by main\n"
-         "//                (vector loop, mirrored in gen_data.py); a permutation\n"
-         "//                with per-bucket sequential runs of NREC/F records\n"
-         "//   rs_src[i]  = i                                filled on-core\n"
-         "//   rs_srcT[d*NREC + r] = 4r + d                  baseline arm only, on-core\n"
-         "//   rs_dst     = 0\n"
-         "// Check: rs_dst[slot(r)*RD + d] == r*RD + d, exact, sampled every 4th\n"
-         "// record + the last; the checker recomputes slot(r) from the closed form.\n\n"
-         ).format(cfg, nrec, RD, fanout)
+         "// config: {} (NREC={}, RD={}, FANOUT={}; bucket sizes {}..{})\n"
+         "// Check: rs_dst[rs_slot[r]*RD + d] == rs_src[r*RD + d], exact integers.\n\n"
+         ).format(cfg, nrec, RD, fanout, hist.min(), hist.max())
     s += "#include <stdint.h>\n\n"
     s += ("typedef struct {\n"
           "  unsigned int NREC;        // records (16 B each = RD x e32)\n"
@@ -134,24 +99,25 @@ def emit(nrec, fanout_log2, out_dir):
           "} radix_layer;\n\n")
     s += ("const radix_layer rs_l = {{.NREC = {}, .RD = {}, .FANOUT_LOG2 = {}}};\n\n"
           ).format(nrec, RD, fanout_log2)
-    # record buffers: sized here, filled on-core (declaration order kept from
-    # the verified layout: src, dst, slot, then the seeds)
-    s += ("static uint32_t rs_src[{0}] __attribute__((section(\".data\"), aligned(128)));\n"
-          "static uint32_t rs_dst[{0}] __attribute__((section(\".data\"), aligned(128)));\n"
-          "// +16 elements of slack kept from the verified layout\n"
-          "static uint16_t rs_slot[{1}] __attribute__((section(\".data\"), aligned(64)));\n\n"
-          ).format(nrec * RD, nrec + 16)
-    # iota seeds of the on-core vector fills
-    s += c_array("rs_seed16", "uint16_t", seed16, "{}", align=64)
-    s += c_array("rs_seed32", "uint32_t", seed32, "{}", align=128)
-    (out_dir / "data_{}.h".format(cfg)).write_text(s)
-    print("wrote data_{}.h  (NREC={} RD={} FANOUT={}, dst={} KiB, slots={} KiB)".format(
-        cfg, nrec, RD, fanout, nrec * RD * 4 // 1024, nrec * 2 // 1024))
+    s += "// source records, row-major: word 0 = key, words 1..3 payload\n"
+    s += c_array("rs_src", "uint32_t", src.reshape(-1), hex32, align=128)
+    s += "// destination image, zero\n"
+    s += ("static uint32_t rs_dst[{}] __attribute__((section(\".data\"), aligned(128)));\n\n"
+          ).format(nrec * RD)
+    s += "// partition slot of each record (+64 zero padding)\n"
+    s += c_array("rs_slot", "uint16_t", np.concatenate([slot, np.zeros(64, dtype=np.uint16)]),
+                 "{}".format, align=64)
+    s += "// column-major staging of the same records (baseline arm only)\n"
+    s += c_array("rs_srcT", "uint32_t", srcT, hex32, align=128)
+    path = out_dir / "data_{}.h".format(cfg)
+    path.write_text(s)
+    print("wrote data_{}.h  (NREC={} RD={} FANOUT={}, dst={} KiB, buckets {}..{} records, header {:.1f} MB)".format(
+        cfg, nrec, RD, fanout, nrec * RD * 4 // 1024, hist.min(), hist.max(), path.stat().st_size / 1e6))
 
 
 if __name__ == "__main__":
     p = argparse.ArgumentParser()
-    p.add_argument("--nrec", type=int, nargs="+", default=[65536],
+    p.add_argument("--nrec", type=int, nargs="+", default=[8192, 65536],
                    help="record counts to emit (one header each)")
     p.add_argument("--fanout-log2", type=int, default=8)
     args = p.parse_args()

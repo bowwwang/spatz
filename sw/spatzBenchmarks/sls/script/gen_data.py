@@ -105,11 +105,12 @@ if __name__ == "__main__":
     p.add_argument("--ROW_D", type=int, default=0, help="default 16 (fp16) / 32 (fp32)")
     p.add_argument("--NROWS", type=int, nargs="+", default=[4096])
     p.add_argument("--dbg", action="store_true", help="also emit the _dbg header (DBG_EVERY = NB/8)")
+    p.add_argument("--tag", default="", help="config-name suffix, e.g. _nb2048 for paper-size runs")
     args = p.parse_args()
     row_d = args.ROW_D or (16 if args.dtype == "fp16" else 32)
     out_dir = pathlib.Path(__file__).parent.parent / "data"
     out_dir.mkdir(exist_ok=True)
     for n in args.NROWS:
-        emit("{}_n{}".format(args.dtype, n), args.NB, args.LP, row_d, n, out_dir, args.dtype)
+        emit("{}_n{}{}".format(args.dtype, n, args.tag), args.NB, args.LP, row_d, n, out_dir, args.dtype)
         if args.dbg:
             emit("{}_n{}_dbg".format(args.dtype, n), args.NB, args.LP, row_d, n, out_dir, args.dtype, dbg_every=max(1, args.NB // 8))

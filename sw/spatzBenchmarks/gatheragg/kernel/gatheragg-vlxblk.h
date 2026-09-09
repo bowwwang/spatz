@@ -7,17 +7,16 @@
 
 #include <stdint.h>
 
-// Indexed-row gather + sum pooling, VLXBLK arm:
-//   out[b, :] = sum_l t[idx[b, l], :]   for nb destinations x lp rows of
-// row_d f32 each. Gather-across-units: the 128 / row_d destinations of one
-// m4 group are pooled simultaneously (one vlxblkei16 per round l, one
-// whole-group vfadd). idx is TRANSPOSED (round-major within each group):
-// round l of group g is the contiguous run idx[g*lp*upg + l*upg .. +upg).
-// nb must be a multiple of 128 / row_d.
-// dbg_every != 0 prints "DBGG <b>" every dbg_every destinations (bug-A
-// hang locator for the waveform session; 0 in measurement configs).
+// GNN pull-mode neighbour aggregation (paper row "gnnagg"), VLXBLK arm:
+//   out[b, :] = sum_l t[idx[b, l], :]   for nb nodes x lp rows of row_d = 64
+// fp32 (256-B rows). Gather-across-nodes: the 4 nodes of one e32 m8 group
+// are pooled simultaneously (one vlxblkei16 of 4 rows per round l, one
+// whole-group vfadd). idx is TRANSPOSED (round-major within each group of
+// 4): round l of group g is the contiguous run idx[g*lp*4 + l*4 .. +4),
+// and the array carries >= 16 ids of padding. nb must be a multiple of 4,
+// lp >= 2.
 void agg_vlxblk(float *out, const float *t, const uint16_t *idx,
                 const unsigned int nb, const unsigned int row_d,
-                const unsigned int lp, const unsigned int dbg_every);
+                const unsigned int lp);
 
 #endif

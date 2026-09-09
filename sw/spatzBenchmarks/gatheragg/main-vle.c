@@ -2,8 +2,9 @@
 // Licensed under the Apache License, Version 2.0, see LICENSE for details.
 // SPDX-License-Identifier: Apache-2.0
 
-// gatheragg, vle baseline arm. Identical data path to main-vlxblk.c; only
-// the kernel differs.
+// gatheragg (gnnagg), vle baseline arm (one unit-stride 256-B row load per
+// neighbour, row-major ids). All data is literal in the generated
+// DATAHEADER (script/gen_data.py); nothing is generated on-core.
 
 #include <benchmark.h>
 #include <snrt.h>
@@ -12,42 +13,23 @@
 #include DATAHEADER
 #include "kernel/gatheragg-vle.c"
 
-#include "bench_fill.h"
-
-// Table fill: exact dyadic head (centred ramp, multiples of 2^-10 in
-// [-0.477, 0.476)), then vector-tiled to the full table. Mirrored
-// bit-exactly in gen_data.py; a ramp (not a hash) so that the distinct
-// table rows have well-separated sums for the checksum verifier.
-static void fill_table(float *t, const unsigned int n,
-                       const unsigned int head) {
-  const unsigned int h = n < head ? n : head;
-  for (unsigned int i = 0; i < h; ++i)
-    t[i] = (float)((int)i - 488) / 1024.0f;
-  if (n > h)
-    bench_fill_rep(t, n * 4u, h * 4u);
-}
-
-// Verify EVERY destination by a per-row checksum: the fp32 sum over its
-// row_d outputs vs the float64 sum of the bit-exact fp32 emulation from
-// gen_data.py. Tolerance 1e-4 * |chk| + 1e-3 covers the on-core fp32
-// summation error (<= row_d ulp, ~4e-6 relative); one wrong gathered row
-// shifts the checksum by O(1) (the distinct table rows have pairwise
-// distinct sums, gap printed by gen_data.py).
-int verify_output(const float *out, const float *chk, const unsigned int nb,
-                  const unsigned int row_d) {
-  for (unsigned int b = 0; b < nb; ++b) {
-    float sum = 0.0f;
-    for (unsigned int d = 0; d < row_d; ++d)
-      sum += out[b * row_d + d];
-    float exp = chk[b];
-    float err = sum > exp ? sum - exp : exp - sum;
-    float mag = exp < 0 ? -exp : exp;
-    if (err > 0.001f + 0.0001f * mag) {
-      printf("FAILED b=%u got=%f exp=%f\n", b, sum, exp);
-      return b == 0 ? -1 : (int)b;
+// Exact fp32 bit compare of every output lane against the bit-exact
+// emulation from gen_data.py (integer loads only).
+static int verify_output(const float *out, const uint32_t *expected_bits,
+                         const unsigned int n, const unsigned int row_d) {
+  const uint32_t *ow = (const uint32_t *)out;
+  unsigned int fails = 0;
+  for (unsigned int i = 0; i < n; ++i) {
+    if (ow[i] != expected_bits[i]) {
+      if (fails < 8)
+        printf("FAILED b=%u d=%u got=0x%08x exp=0x%08x\n", i / row_d, i % row_d,
+               (unsigned)ow[i], (unsigned)expected_bits[i]);
+      fails++;
     }
   }
-  return 0;
+  if (fails)
+    printf("FAILED total=%u/%u\n", fails, n);
+  return fails > 255 ? 255 : (int)fails;
 }
 
 int main() {
@@ -71,24 +53,18 @@ int main() {
   unsigned int timer = 0;
 
   if (cid == 0) {
-    fill_table(ga_tbl, ga_l.NROWS * ga_l.ROW_D, ga_l.HEAD);
-    bench_fill_zero(ga_out, sizeof(ga_out));
-
-#if USE_CACHE == 1
-    l1d_flush();
-    l1d_wait();
-#endif
-
     // Start timer
     timer = benchmark_get_cycle();
 
-    agg_vle(ga_out, ga_tbl, ga_idx, ga_l.NB, ga_l.ROW_D, ga_l.LP);
+    agg_vle_d64(ga_out, (const float *)ga_tbl_bits, ga_idx_rows, ga_l.NB,
+                ga_l.LP);
     asm volatile("fence" ::: "memory");
 
     // End timer
     timer = benchmark_get_cycle() - timer;
 
-    error = verify_output(ga_out, ga_chk, ga_l.NB, ga_l.ROW_D);
+    error = verify_output(ga_out, ga_expected_bits, ga_l.NB * ga_l.ROW_D,
+                          ga_l.ROW_D);
 
 #ifdef PRINT_RESULT
     printf("gatheragg vle nb=%u row_d=%u lp=%u nrows=%u cache=%d: took %u "

@@ -59,19 +59,21 @@ void agg_vle_d32(float *out, const float *t, const uint16_t *idx,
 // 64-f32 rows (m2)
 // ---------------
 
+// Row-major ids (idx[b * lp + l]); the first row initializes the
+// accumulator (vmv), later rows add in ascending l - the same lane-wise
+// fp32 order the generator emulates bit-exactly.
 void agg_vle_d64(float *out, const float *t, const uint16_t *idx,
                  const unsigned int nb, const unsigned int lp) {
   const unsigned int row_d = 64;
-  const unsigned int upg = 128 / row_d;
 
   for (unsigned int b = 0; b < nb; ++b) {
-    const uint16_t *bg = idx + (b / upg) * (lp * upg) + (b % upg);
+    const uint16_t *bg = idx + b * lp;
 
     asm volatile("vsetvli zero, %0, e32, m2, ta, ma" ::"r"(row_d));
     asm volatile("vmv.v.i v24, 0");
 
     for (unsigned int l = 0; l < lp; ++l) {
-      const float *row = t + (unsigned int)bg[l * upg] * row_d;
+      const float *row = t + (unsigned int)bg[l] * row_d;
 
       asm volatile("vsetvli zero, %0, e32, m2, ta, ma" ::"r"(row_d));
       asm volatile("vle32.v v8, (%0)" ::"r"(row) : "memory");

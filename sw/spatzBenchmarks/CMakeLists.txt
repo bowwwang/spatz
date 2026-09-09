@@ -200,42 +200,40 @@ add_vqdecode(0 rvv 64)
 # attn-vagg: sparse-attention V-aggregation (256-B fp16 rows = m4 @ e16).
 # sp-fmatmul layout: one main per arm (main-vlxblk.c / main-vle.c), kernel
 # in attn-vagg/kernel/, config from the generated DATAHEADER
-# (attn-vagg/script/gen_data.py -> data/data_n<ntok>.h; the header carries
+# (attn-vagg/script/gen_data.py -> data/data_nq<NQ>.h; the header carries
 # the NQ/TOPK/HD/NTOK parameters, so no size macros).
 # Paper config (BENCHMARK_PLAN 2026-09-07): 16K-token V cache = 4 MiB,
 # TOPK=1024 budget, NQ=16.
-macro(add_attnvagg arm ntok)
-  set(target_name attn-vagg-${arm}-n${ntok})
+# Data: script/gen_data.py -> data/data_nq<NQ>.h with ALL arrays literal
+# (V pool, ids, scores, per-arm expected outputs); nq16 = paper config,
+# nq2 = quick development config.
+macro(add_attnvagg arm cfg)
+  set(target_name attn-vagg-${arm}-${cfg})
   add_snitch_test(${target_name} attn-vagg/main-${arm}.c)
   target_link_libraries(test-${SNITCH_TEST_PREFIX}${target_name} benchmark ${SNITCH_RUNTIME})
-  target_compile_definitions(test-${SNITCH_TEST_PREFIX}${target_name} PUBLIC DATAHEADER="data/data_n${ntok}.h" PRINT_RESULT USE_CACHE=${USE_CACHE} PRINT_UART=${PRINT_UART})
+  target_compile_definitions(test-${SNITCH_TEST_PREFIX}${target_name} PUBLIC DATAHEADER="data/data_${cfg}.h" PRINT_RESULT USE_CACHE=${USE_CACHE} PRINT_UART=${PRINT_UART})
 endmacro()
-add_attnvagg(vlxblk 16384)
-add_attnvagg(vle 16384)
+add_attnvagg(vlxblk nq2)
+add_attnvagg(vlxblk nq16)
+add_attnvagg(vle nq16)
 
-# gatheragg: DLRM embedding-bag (sls-fp32, d32) and GNN aggregation
-# (gnnagg, d64). sp-fmatmul layout: one main per arm (main-vlxblk.c /
-# main-vle.c), kernels in gatheragg/kernel/, config from the generated
-# DATAHEADER (gatheragg/script/gen_data.py -> data/data_<cfg>.h; the header
-# carries NB/ROW_D/LP/NROWS/DBG_EVERY, so no size macros).
-# Paper configs (BENCHMARK_PLAN 2026-09-07 ruling): NB=2048 destinations,
-# sls-fp32 = d32-n16384 (LP=40, 2 MiB table), gnnagg = d64-n16384 (LP=25,
-# 4 MiB table).
-#   vname: target arm name   arm: main-<arm>.c   cfg: target suffix
-#   data: data/data_<data>.h
-macro(add_gatheragg vname arm cfg data)
-  set(target_name gatheragg-${vname}-${cfg})
+# gatheragg = paper row "gnnagg": GNN pull-mode neighbour aggregation,
+# 256-B fp32 rows (d64), 4-MiB table. sp-fmatmul layout: one main per arm
+# (main-vlxblk.c / main-vle.c), kernels in gatheragg/kernel/, config from
+# the generated DATAHEADER (gatheragg/script/gen_data.py ->
+# data/data_<cfg>.h; ALL arrays literal - table, ids, expected output).
+# Paper config (BENCHMARK_PLAN 2026-09-07 ruling): NB=2048 nodes x LP=25
+# (GraphSAGE S1), NROWS=16384; d64_nb64 is the quick development config.
+# (The former d32 configs are superseded by the sls kernels.)
+macro(add_gatheragg arm cfg)
+  set(target_name gatheragg-${arm}-${cfg})
   add_snitch_test(${target_name} gatheragg/main-${arm}.c)
   target_link_libraries(test-${SNITCH_TEST_PREFIX}${target_name} benchmark ${SNITCH_RUNTIME})
-  target_compile_definitions(test-${SNITCH_TEST_PREFIX}${target_name} PUBLIC DATAHEADER="data/data_${data}.h" PRINT_RESULT USE_CACHE=${USE_CACHE} PRINT_UART=${PRINT_UART})
+  target_compile_definitions(test-${SNITCH_TEST_PREFIX}${target_name} PUBLIC DATAHEADER="data/data_${cfg}.h" PRINT_RESULT USE_CACHE=${USE_CACHE} PRINT_UART=${PRINT_UART})
 endmacro()
-add_gatheragg(vlxblk vlxblk d32-n16384 d32_n16384)
-add_gatheragg(vle vle d32-n16384 d32_n16384)
-add_gatheragg(vlxblk vlxblk d64-n16384 d64_n16384)
-add_gatheragg(vle vle d64-n16384 d64_n16384)
-# Bug-A waveform repro: same vlxblk main + a data header with DBG_EVERY=32
-# (the kernel prints "DBGG <bag>" every 32 bags). Never used for measurement.
-add_gatheragg(vlxblk-dbg vlxblk d32-n16384 d32_n16384_dbg)
+add_gatheragg(vlxblk d64_nb64)
+add_gatheragg(vlxblk d64_nb2048)
+add_gatheragg(vle d64_nb2048)
 
 # isaprobe: instruction-level hang probes (debug aid, not a benchmark)
 add_snitch_test(isaprobe isaprobe/main.c)
@@ -261,6 +259,9 @@ add_sls(vle main-vle.c fp16_n4096)
 add_sls(vle main-vle.c fp16_n65536)
 # sls-2 (fp32, 128-B rows): L1-resident 128 KiB table and the paper's 2 MiB table
 add_sls(vlxblk32 main-vlxblk32.c fp32_n1024)
+# paper-size runs (NB=2048): generate with `--NB 2048 --tag _nb2048`
+add_sls(vlxblk main-vlxblk.c fp16_n65536_nb2048)
+add_sls(vlxblk32 main-vlxblk32.c fp32_n16384_nb2048)
 add_sls(vlxblk32 main-vlxblk32.c fp32_n16384)
 # hang-locator builds (DBG_EVERY progress print; never for measurement)
 add_sls(vlxblk main-vlxblk.c fp16_n4096_dbg)
@@ -282,11 +283,12 @@ macro(add_radix arm cfg)
   target_link_libraries(test-${SNITCH_TEST_PREFIX}${target_name} benchmark ${SNITCH_RUNTIME})
   target_compile_definitions(test-${SNITCH_TEST_PREFIX}${target_name} PUBLIC DATAHEADER="data/data_${cfg}.h" PRINT_RESULT USE_CACHE=${USE_CACHE} PRINT_UART=${PRINT_UART})
 endmacro()
+# Data: script/gen_data.py -> data/data_n<nrec>.h, a real radix partition
+# of random keys (F=256) with ALL arrays literal (src, srcT, slots, zero
+# dst); n8192 is the quick development config, n65536 the paper config.
+add_radix(vsxblk n8192)
 add_radix(vsxblk n65536)
 add_radix(vsuxei n65536)
-# Smoke configs of the old block (n4096 / n16384) are not generated by
-# default; to restore them run `script/gen_data.py --nrec 4096 16384 65536`
-# and add `add_radix(vsxblk n4096)` etc.
 
 # pr-gather: PageRank pull, D=1 x e64 (index-semantics regime point).
 # sp-fmatmul layout: one main per arm (main-vlxblk.c / main-vluxei.c),
@@ -357,14 +359,17 @@ add_vqgemm(rvv vptq)
 # sp-fmatmul layout: one main per arm (main-vlxblk.c / main-rvv.c), kernel
 # in nbforce/kernel/, config from the generated DATAHEADER
 # (nbforce/script/gen_data.py -> data/data_<cfg>.h; the header carries the
-# NC_DOM/NC_TILE/LIST/WINDOW/CUT2 parameters and the literal pair list, so
-# no size macros).
+# NC_DOM/NC_TILE/LIST/WINDOW/CUT2 parameters and ALL arrays literally:
+# the four X4 field arrays, the pair list, the baseline's expanded index
+# array and the expected forces; no size macros, no on-core datagen).
+# adh = paper tile (256 i-clusters), adh_t32 = quick development tile.
 macro(add_nbforce arm cfg)
-  set(target_name nbforce-${arm})
+  set(target_name nbforce-${arm}-${cfg})
   add_snitch_test(${target_name} nbforce/main-${arm}.c)
   target_link_libraries(test-${SNITCH_TEST_PREFIX}${target_name} benchmark ${SNITCH_RUNTIME})
   target_compile_definitions(test-${SNITCH_TEST_PREFIX}${target_name} PUBLIC DATAHEADER="data/data_${cfg}.h" PRINT_RESULT USE_CACHE=${USE_CACHE} PRINT_UART=${PRINT_UART})
 endmacro()
+add_nbforce(vlxblk adh_t32)
 add_nbforce(vlxblk adh)
 add_nbforce(rvv adh)
 
