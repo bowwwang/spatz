@@ -3,8 +3,8 @@
 // SPDX-License-Identifier: Apache-2.0
 
 // vqgemm, VLXBLK arm. Data (A matrix, indices, scales, expected output)
-// from the generated DATAHEADER; codebooks filled on-core from the
-// closed-form pattern the generator mirrors (see script/gen_data.py).
+// from the generated DATAHEADER (script/gen_data.py); this file contains
+// no data generation.
 
 #include <benchmark.h>
 #include <snrt.h>
@@ -12,8 +12,6 @@
 
 #include DATAHEADER
 #include "kernel/vqgemm-vlxblk.c"
-
-#include "bench_fill.h"
 
 // Hardware fp16 -> float (the toolchain's software cast is broken).
 static inline float f16_to_f32(const __fp16 *p) {
@@ -23,33 +21,33 @@ static inline float f16_to_f32(const __fp16 *p) {
   return v;
 }
 
-// Codebook fill: exact dyadic head (multiples of 2^-10 in [-0.5, 0.5)),
-// then vector-tiled to the full table. Mirrored bit-exactly in gen_data.py.
-static void fill_codebook(__fp16 *cb, const unsigned int n,
-                          const unsigned int head, const unsigned int mult) {
-  const unsigned int h = n < head ? n : head;
-  for (unsigned int i = 0; i < h; ++i)
-    cb[i] = (__fp16)((float)((int)((i * mult) & 1023u) - 512) / 1024.0f);
-  if (n > h)
-    bench_fill_rep(cb, n * 2u, h * 2u);
-}
-
 // Verify all M*N outputs against the bit-exact fp16 emulation from
 // gen_data.py. Tolerance = a few fp16 ulp (2^-10 relative + 2^-9 abs):
 // one wrong gathered entry perturbs a lane by >= ~0.01, far above it.
 int verify_output(const __fp16 *c, const float *expected,
                   const unsigned int M, const unsigned int N) {
-  for (unsigned int i = 0; i < M * N; ++i) {
-    float got = f16_to_f32(c + i);
-    float exp = expected[i];
-    float err = got > exp ? got - exp : exp - got;
-    float mag = exp < 0 ? -exp : exp;
-    if (err > 0.002f + 0.002f * mag) {
-      printf("FAILED m=%u n=%u got=%f exp=%f\n", i / N, i % N, got, exp);
-      return i == 0 ? -1 : (int)i;
+  unsigned int fails = 0, first_bad_tile = 0xffffffffu;
+  float max_err = 0.0f;
+  for (unsigned int m = 0; m < M; ++m)
+    for (unsigned int n = 0; n < N; ++n) {
+      float got = f16_to_f32(c + m * N + n);
+      float exp = expected[m * N + n];
+      float err = got > exp ? got - exp : exp - got;
+      float mag = exp < 0 ? -exp : exp;
+      if (err > 0.002f + 0.002f * mag) {
+        if (fails < 8)
+          printf("FAILED m=%u n=%u got=%f exp=%f\n", m, n, got, exp);
+        if (first_bad_tile == 0xffffffffu)
+          first_bad_tile = m / 8;
+        ++fails;
+        if (err > max_err)
+          max_err = err;
+      }
     }
-  }
-  return 0;
+  if (fails)
+    printf("FAILED total=%u/%u max_err=%f first_bad_tile=%u\n", fails, M * N,
+           max_err, first_bad_tile);
+  return (int)(fails > 255 ? 255 : fails);
 }
 
 int main() {
@@ -73,9 +71,6 @@ int main() {
   unsigned int timer = 0;
 
   if (cid == 0) {
-    fill_codebook(vq_cb0, vq_l.CBN * vq_l.CB_D, vq_l.HEAD, 37u);
-    fill_codebook(vq_cb1, vq_l.CBN * vq_l.CB_D, vq_l.HEAD, 53u);
-    bench_fill_zero(vq_c, sizeof(vq_c));
 
 #if USE_CACHE == 1
     l1d_flush();

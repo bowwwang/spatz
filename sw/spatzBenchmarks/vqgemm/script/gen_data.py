@@ -9,20 +9,18 @@
 # C[M,N] = sum_k A[m,k] * scale[k] * (cb0[idx0[k,g], d] + cb1[idx1[k,g], d])
 # (n = g*CB_D + d), i.e. the vqgemv decode fused into an M-row GEMM.
 #
-# All values are exact dyadic rationals (multiples of 2^-10 / 2^-7), so the
-# on-core fp16 arrays and this script agree bit-for-bit. The codebooks are
-# NOT emitted literally (VPTQ = 2 x 128 KiB): the core fills them from the
-# same closed-form pattern (head of HEAD elements, tiled) with the vector
-# helper in include/bench_fill.h; this script reproduces that fill exactly
-# to compute the expected output. A (M x K fp16) and the full expected
-# output (M x N) ARE literal: 16K elements each is well under the ~64K
-# literal budget, and the header is git-ignored like every data header.
+# EVERYTHING the kernels read is emitted literally (A, scales, indices,
+# both codebooks) plus the expected output; the mains contain no data
+# generation. Values are exact dyadic rationals so the fp16 literals
+# round-trip exactly. Both arms are software-pipelined two-round kernels:
+# K and groups (= N/CB_D) must be even; the index arrays carry 256
+# elements of tail padding for the vlxblk arm's explicit-EEW over-read.
 
 import argparse
 import pathlib
 import numpy as np
 
-HEAD = 1952  # fp16 elements in the fill head = BF_HEAD_BYTES / 2
+HEAD = 1952  # period of the codebook pattern (elements), kept for value continuity
 
 
 def codebook(cbe, mult):
@@ -103,26 +101,29 @@ def emit(cfg, M, N, K, CB_D, CBN, idx_bytes, out_dir):
           "  unsigned int CB_D;      // codebook entry length (elements)\n"
           "  unsigned int CBN;       // codebook entries per table\n"
           "  unsigned int IDX_BYTES; // 1 = u8 indices (vlxblkei8), 2 = u16 (vlxblkei16)\n"
-          "  unsigned int HEAD;      // codebook fill head length (elements)\n"
           "} vqgemm_layer;\n\n")
     s += ("const vqgemm_layer vq_l = {{.M = {}, .N = {}, .K = {}, .CB_D = {}, .CBN = {}, "
-          ".IDX_BYTES = {}, .HEAD = {}}};\n\n").format(M, N, K, CB_D, CBN, idx_bytes, HEAD)
+          ".IDX_BYTES = {}}};\n\n").format(M, N, K, CB_D, CBN, idx_bytes)
     s += "// A[M][K], row-major\n"
-    s += c_array("vq_a", "__fp16", a.reshape(M * K).astype(np.float64), "(__fp16){:.10g}")
-    s += c_array("vq_scales", "__fp16", scales.astype(np.float64), "(__fp16){:.10g}")
+    s += c_array("vq_a", "__fp16", a.reshape(M * K).astype(np.float64), "(__fp16){:.10e}")
+    s += c_array("vq_scales", "__fp16", scales.astype(np.float64), "(__fp16){:.10e}")
     s += "// idx[K][groups], row-major (entry numbers)\n"
-    s += c_array("vq_idx0", idx_ctype, idx0, "{}")
-    s += c_array("vq_idx1", idx_ctype, idx1, "{}")
+    # +256 zero elements of tail padding: the pipelined vlxblk kernel loads
+    # indices under the tile vtype (explicit EEW) and over-reads up to N
+    # elements past the current k-row (never used, must be addressable).
+    pad = np.zeros(256, dtype=np.int64)
+    s += c_array("vq_idx0", idx_ctype, np.concatenate([idx0, pad]), "{}")
+    s += c_array("vq_idx1", idx_ctype, np.concatenate([idx1, pad]), "{}")
     s += "// expected C[M][N], row-major (fp16 results widened to float)\n"
-    s += c_array("vq_expected", "const float", expected, "{:.9g}f", data_section=False)
-    # codebook + output + scratch buffers: sized here, filled on-core
-    s += ("static __fp16 vq_cb0[{0}] __attribute__((section(\".data\"), aligned(64)));\n"
-          "static __fp16 vq_cb1[{0}] __attribute__((section(\".data\"), aligned(64)));\n"
-          "static __fp16 vq_c[{1}] __attribute__((section(\".data\"), aligned(64)));\n"
-          "// rvv arm decode scratch row; +16 elements: its per-group stores are\n"
-          "// padded to 32 B\n"
-          "static __fp16 vq_wrow[{2}] __attribute__((section(\".data\"), aligned(64)));\n"
-          ).format(CBN * CB_D, M * N, N + 16)
+    s += c_array("vq_expected", "const float", expected, "{:.9e}f", data_section=False)
+    # codebooks: literal (CBN x CB_D fp16 each)
+    s += c_array("vq_cb0", "__fp16", cb0.astype(np.float64), "(__fp16){:.10e}")
+    s += c_array("vq_cb1", "__fp16", cb1.astype(np.float64), "(__fp16){:.10e}")
+    # output (zero-initialized static) + the rvv arm's DOUBLE-BUFFERED decode
+    # scratch rows (k parity), each +16 elements for the padded 32-B stores
+    s += ("static __fp16 vq_c[{0}] __attribute__((section(\".data\"), aligned(64)));\n"
+          "static __fp16 vq_wrow[{1}] __attribute__((section(\".data\"), aligned(64)));\n"
+          ).format(M * N, 2 * (N + 16))
     (out_dir / "data_{}.h".format(cfg)).write_text(s)
     print("wrote data_{}.h  (M={} N={} K={} CB_D={} CBN={} idx={}B, |expected|max={:.3f})".format(
         cfg, M, N, K, CB_D, CBN, idx_bytes, np.abs(expected).max()))

@@ -12,25 +12,12 @@
 #include DATAHEADER
 #include "kernel/vqgemm-rvv.c"
 
-#include "bench_fill.h"
-
 // Hardware fp16 -> float (the toolchain's software cast is broken).
 static inline float f16_to_f32(const __fp16 *p) {
   float h, v;
   asm volatile("flh %0, 0(%1)" : "=f"(h) : "r"(p));
   asm volatile("fcvt.s.h %0, %1" : "=f"(v) : "f"(h));
   return v;
-}
-
-// Codebook fill: exact dyadic head (multiples of 2^-10 in [-0.5, 0.5)),
-// then vector-tiled to the full table. Mirrored bit-exactly in gen_data.py.
-static void fill_codebook(__fp16 *cb, const unsigned int n,
-                          const unsigned int head, const unsigned int mult) {
-  const unsigned int h = n < head ? n : head;
-  for (unsigned int i = 0; i < h; ++i)
-    cb[i] = (__fp16)((float)((int)((i * mult) & 1023u) - 512) / 1024.0f);
-  if (n > h)
-    bench_fill_rep(cb, n * 2u, h * 2u);
 }
 
 // Verify all M*N outputs against the bit-exact fp16 emulation from
@@ -72,9 +59,6 @@ int main() {
   unsigned int timer = 0;
 
   if (cid == 0) {
-    fill_codebook(vq_cb0, vq_l.CBN * vq_l.CB_D, vq_l.HEAD, 37u);
-    fill_codebook(vq_cb1, vq_l.CBN * vq_l.CB_D, vq_l.HEAD, 53u);
-    bench_fill_zero(vq_c, sizeof(vq_c));
 
 #if USE_CACHE == 1
     l1d_flush();
