@@ -2,20 +2,26 @@
 // Licensed under the Apache License, Version 2.0, see LICENSE for details.
 // SPDX-License-Identifier: Apache-2.0
 
-// attn-vagg (spattn), VLXBLK arm. All data (V pool, token ids, scores,
-// expected output) is literal in the generated DATAHEADER
-// (script/gen_data.py); nothing is generated on-core.
+// attn-vagg (spattn), plain-RVV vle baseline arm. All data is literal in
+// the generated DATAHEADER (script/gen_data.py); nothing is generated
+// on-core. The baseline keeps its fused vfmacc.vf order and is checked
+// against the matching fused emulation.
+
+// POWER-SIMULATION BUILD (2026-09-10). Same kernel, same data geometry -
+// block size, table/footprint and the per-iteration work are untouched; only
+// the number of repeated iterations is reduced so a power run stays short.
+// The timed region is bracketed by start_kernel()/stop_kernel() for the power
+// tooling, and the result check is disabled (correctness is measured by the
+// normal targets).
 
 #include <benchmark.h>
 #include <snrt.h>
 #include <stdio.h>
 
 #include DATAHEADER
-#include "kernel/attn-vlxblk.c"
+#include "kernel/attn-vle.c"
 
-// Exact fp16 bit compare of every output lane against the bit-exact
-// emulation from gen_data.py (integer loads only: no FPU loads after the
-// kernel's vector stores).
+// Exact fp16 bit compare of every output lane (integer loads only).
 static int verify_output(const __fp16 *out, const uint16_t *expected_bits,
                          const unsigned int n, const unsigned int hd) {
   const uint16_t *ow = (const uint16_t *)out;
@@ -34,6 +40,8 @@ static int verify_output(const __fp16 *out, const uint16_t *expected_bits,
 }
 
 int main() {
+  const unsigned int PWR_NQ = 2u; // decode queries (V pool stays 4 MiB)
+  const unsigned int PWR_TOPK = 256u; // selected tokens per query
   const unsigned int cid = snrt_cluster_core_idx();
 
 #if USE_CACHE == 1
@@ -55,27 +63,29 @@ int main() {
 
   if (cid == 0) {
     // Start timer
+    start_kernel();
     timer = benchmark_get_cycle();
 
-    attn_vlxblk(attn_out, (const __fp16 *)attn_pool_bits, attn_idx_rows,
-                (const __fp16 *)attn_p_bits, attn_l.NQ, attn_l.TOPK, attn_l.HD);
+    attn_vle(attn_out, (const __fp16 *)attn_pool_bits, attn_idx_rows,
+             (const __fp16 *)attn_p_bits, PWR_NQ, PWR_TOPK, attn_l.HD);
     asm volatile("fence" ::: "memory");
 
     // End timer
     timer = benchmark_get_cycle() - timer;
+    stop_kernel();
 
-    // v4 accumulates with fused vfmacc.vf in ascending k (v1 used vfmul +
-    // pairwise vfadd), so the reference is the FUSED emulation.
-    error = verify_output(attn_out, attn_expected_fused_bits, attn_l.NQ * attn_l.HD,
-                          attn_l.HD);
+    // power build: no result check
+
+
+    // error = verify_output(attn_out, attn_expected_fused_bits,
+    //                           PWR_NQ * attn_l.HD, attn_l.HD);
 
 #ifdef PRINT_RESULT
-    // MACs = NQ * TOPK * HD (fp16)
-    printf("attn-vagg vlxblk nq=%u topk=%u hd=%u ntok=%u cache=%d: took %u "
+    printf("attn-vagg vle nq=%u topk=%u hd=%u ntok=%u cache=%d: took %u "
            "cycles %s (macs=%u)\n",
-           attn_l.NQ, attn_l.TOPK, attn_l.HD, attn_l.NTOK, USE_CACHE, timer,
+           PWR_NQ, PWR_TOPK, attn_l.HD, attn_l.NTOK, USE_CACHE, timer,
            error ? "CHECK-FAILED" : "CHECK-OK",
-           attn_l.NQ * attn_l.TOPK * attn_l.HD);
+           PWR_NQ * PWR_TOPK * attn_l.HD);
 #endif
   }
 

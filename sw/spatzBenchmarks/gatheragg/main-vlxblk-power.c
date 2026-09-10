@@ -6,6 +6,13 @@
 // output) is literal in the generated DATAHEADER (script/gen_data.py);
 // nothing is generated on-core.
 
+// POWER-SIMULATION BUILD (2026-09-10). Same kernel, same data geometry -
+// block size, table/footprint and the per-iteration work are untouched; only
+// the number of repeated iterations is reduced so a power run stays short.
+// The timed region is bracketed by start_kernel()/stop_kernel() for the power
+// tooling, and the result check is disabled (correctness is measured by the
+// normal targets).
+
 #include <benchmark.h>
 #include <snrt.h>
 #include <stdio.h>
@@ -34,6 +41,7 @@ static __attribute__((unused)) static int verify_output(const float *out, const 
 }
 
 int main() {
+  const unsigned int PWR_NB = 16u; // nodes (table stays 4 MiB, 25 neighbours per node)
   const unsigned int cid = snrt_cluster_core_idx();
 
 #if USE_CACHE == 1
@@ -55,14 +63,16 @@ int main() {
 
   if (cid == 0) {
     // Start timer
+    start_kernel();
     timer = benchmark_get_cycle();
 
-    agg_vlxblk(ga_out, (const float *)ga_tbl_bits, ga_idx, ga_l.NB, ga_l.ROW_D,
+    agg_vlxblk(ga_out, (const float *)ga_tbl_bits, ga_idx, PWR_NB, ga_l.ROW_D,
                ga_l.LP);
     asm volatile("fence" ::: "memory");
 
     // End timer
     timer = benchmark_get_cycle() - timer;
+    stop_kernel();
 
     // Result check REMOVED (user ruling 2026-09-10: the optimized kernel
     // mismatches and we do not care - this row is timing only). The
@@ -75,7 +85,7 @@ int main() {
 #ifdef PRINT_RESULT
     printf("gatheragg vlxblk nb=%u row_d=%u lp=%u nrows=%u cache=%d: took %u "
            "cycles %s\n",
-           ga_l.NB, ga_l.ROW_D, ga_l.LP, ga_l.NROWS, USE_CACHE, timer,
+           PWR_NB, ga_l.ROW_D, ga_l.LP, ga_l.NROWS, USE_CACHE, timer,
            error ? "CHECK-FAILED" : "CHECK-SKIPPED");
 #endif
   }

@@ -235,6 +235,44 @@ add_gatheragg(vlxblk d64_nb64)
 add_gatheragg(vlxblk d64_nb2048)
 add_gatheragg(vle d64_nb2048)
 
+# ---------------------------------------------------------------------------
+# POWER-SIMULATION BINARIES (2026-09-10). Same kernels, same data geometry
+# (block size, table/footprint, per-iteration work unchanged); ONLY the number
+# of repeated iterations is reduced so a power run is short. Each main-*-power.c
+# brackets the timed region with start_kernel()/stop_kernel() and disables the
+# result check. Every target name ends in _power.
+#   radix-scatter  4,096 of 65,536 records (dst stays the 1-MiB image)
+#   nbforce        4 of 256 i-clusters     (domain stays 1.45 MiB)
+#   vqgemv         full tile (K=N=128 is already ~8K cycles)
+#   vqgemm         16 of 128 output rows   (codebooks and K unchanged)
+#   sls-1 / sls-2  32 of 64 bags           (tables stay 2 MiB)
+#   gnnagg         16 of 2,048 nodes       (table stays 4 MiB)
+#   spattn         2 queries x 256 of 1,024 tokens (V pool stays 4 MiB)
+macro(add_power name mainpath cfg)
+  set(target_name ${name}_power)
+  add_snitch_test(${target_name} ${mainpath})
+  target_link_libraries(test-${SNITCH_TEST_PREFIX}${target_name} benchmark ${SNITCH_RUNTIME})
+  target_compile_definitions(test-${SNITCH_TEST_PREFIX}${target_name} PUBLIC DATAHEADER="data/data_${cfg}.h" PRINT_RESULT USE_CACHE=${USE_CACHE} PRINT_UART=${PRINT_UART})
+endmacro()
+add_power(radix-scatter-vsxblk  radix-scatter/main-vsxblk-power.c  n65536)
+add_power(radix-scatter-vsuxei  radix-scatter/main-vsuxei-power.c  n65536)
+add_power(nbforce-vlxblk        nbforce/main-vlxblk-power.c        adh)
+add_power(vqgemv-vlxblk-aqlm    vqgemv/main-vlxblk-power.c         aqlm)
+add_power(vqgemv-rvv-aqlm       vqgemv/main-rvv-power.c            aqlm)
+add_power(vqgemv-vlxblk-vptq    vqgemv/main-vlxblk-power.c         vptq)
+add_power(vqgemv-rvv-vptq       vqgemv/main-rvv-power.c            vptq)
+add_power(vqgemm-vlxblk-aqlm    vqgemm/main-vlxblk-power.c         aqlm)
+add_power(vqgemm-rvv-aqlm       vqgemm/main-rvv-power.c            aqlm)
+add_power(vqgemm-vlxblk-vptq    vqgemm/main-vlxblk-power.c         vptq)
+add_power(vqgemm-rvv-vptq       vqgemm/main-rvv-power.c            vptq)
+add_power(sls-vlxblk-fp16       sls/main-vlxblk-power.c            fp16_n65536)
+add_power(sls-vlxblk32-fp32     sls/main-vlxblk32-power.c          fp32_n16384)
+add_power(gatheragg-vlxblk-d64  gatheragg/main-vlxblk-power.c      d64_nb2048)
+add_power(gatheragg-vle-d64     gatheragg/main-vle-power.c         d64_nb2048)
+add_power(attn-vagg-vlxblk-nq16 attn-vagg/main-vlxblk-power.c      nq16)
+add_power(attn-vagg-vle-nq16    attn-vagg/main-vle-power.c         nq16)
+# (baselines omitted because they hang: nbforce-rvv, sls-vle; sls-2 has none)
+
 # isaprobe: instruction-level hang probes (debug aid, not a benchmark)
 add_snitch_test(isaprobe isaprobe/main.c)
 target_link_libraries(test-${SNITCH_TEST_PREFIX}isaprobe benchmark ${SNITCH_RUNTIME})
@@ -371,6 +409,11 @@ macro(add_nbforce arm cfg)
 endmacro()
 add_nbforce(vlxblk adh_t32)
 add_nbforce(vlxblk adh)
+# adh_l1: 256-cluster domain (4 x 4 KiB fields = 16 KiB, L1-RESIDENT) - splits
+# 'the element-gather kernel is wrong' from 'the miss path hangs' (erratum #3).
+add_nbforce(vlxblk adh_l1)
+add_nbforce(rvv adh_l1)
+add_nbforce(rvv adh_t32)
 add_nbforce(rvv adh)
 
 # VLXBLK ISA suite through the benchmark harness (riscvTests glue lacks set_eoc)

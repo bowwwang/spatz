@@ -7,11 +7,11 @@
 
 #include <stdint.h>
 
-// GROMACS-style 4x4 cluster-pair non-bonded force, plain-RVV baseline:
-// canonical element-granular vluxei32 from a PRECOMPUTED expanded
-// per-element u32 index array (value = cluster*4 + lane; the kernel
-// shifts <<2 to byte offsets), loaded inside the timed region.
-// fo[c*12 + 3*a + d] = force component d of atom a of i-cluster c.
+// GROMACS-style 4x4 cluster-pair non-bonded force (fp32), plain-RVV baseline:
+// same kernel as the VLXBLK arm except that each chunk of 8 j-clusters is
+// fetched with one 128-B load of 32 precomputed per-atom u32 element indices
+// (nb_list_exp, shifted to byte offsets) plus four vluxei32 element gathers.
+// fo[c*12 + 3*a + d]; list a multiple of 16; nb_list_exp padded by >= 256.
 void nbforce_rvv(float *fo, const float *nb_x, const float *nb_y,
                  const float *nb_z, const float *nb_q,
                  const uint32_t *pairlist_exp, const unsigned int nc,

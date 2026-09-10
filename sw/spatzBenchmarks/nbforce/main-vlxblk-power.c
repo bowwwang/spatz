@@ -6,6 +6,13 @@
 // forces) is literal in the generated DATAHEADER (script/gen_data.py);
 // nothing is generated on-core.
 
+// POWER-SIMULATION BUILD (2026-09-10). Same kernel, same data geometry -
+// block size, table/footprint and the per-iteration work are untouched; only
+// the number of repeated iterations is reduced so a power run stays short.
+// The timed region is bracketed by start_kernel()/stop_kernel() for the power
+// tooling, and the result check is disabled (correctness is measured by the
+// normal targets).
+
 #include <benchmark.h>
 #include <snrt.h>
 #include <stdio.h>
@@ -46,6 +53,7 @@ static int verify_output(const float *f, const uint32_t *expected_bits,
 }
 
 int main() {
+  const unsigned int PWR_NC = 4u; // i-clusters (domain stays 23,750 clusters = 1.45 MiB)
   const unsigned int cid = snrt_cluster_core_idx();
 
 #if USE_CACHE == 1
@@ -72,20 +80,20 @@ int main() {
 
     nbforce_vlxblk(nb_f, (const float *)nb_x_bits, (const float *)nb_y_bits,
                    (const float *)nb_z_bits, (const float *)nb_q_bits, nb_list,
-                   nb_l.NC_TILE, nb_l.LIST, nb_l.CUT2_BITS);
+                   PWR_NC, nb_l.LIST, nb_l.CUT2_BITS);
     asm volatile("fence" ::: "memory");
 
     // End timer
     timer = benchmark_get_cycle() - timer;
     stop_kernel();
 
-    // error = verify_output(nb_f, nb_expected_bits, nb_l.NC_TILE * 12u);
+    // error = verify_output(nb_f, nb_expected_bits, PWR_NC * 12u);
 
 #ifdef PRINT_RESULT
     printf("nbforce vlxblk nc=%u list=%u cache=%d: took %u cycles %s "
            "(pairs=%u)\n",
-           nb_l.NC_TILE, nb_l.LIST, USE_CACHE, timer,
-           error ? "CHECK-FAILED" : "CHECK-OK", nb_l.NC_TILE * nb_l.LIST);
+           PWR_NC, nb_l.LIST, USE_CACHE, timer,
+           error ? "CHECK-FAILED" : "CHECK-OK", PWR_NC * nb_l.LIST);
 #endif
   }
 

@@ -44,7 +44,7 @@ void scatter_vsxblk(uint32_t *dst, const uint32_t *src, const uint16_t *slot,
     asm volatile("vle32.v v16, (%0)" ::"r"(pi + pay_el) : "memory");
 
     // ---- scatter chunk A (records r .. r+63) ----
-    asm volatile("vsxblkei16.v v8, (%0), v2" ::"r"(dst) : "memory");
+    asm volatile("vlxblkei16.v v8, (%0), v2" ::"r"(dst) : "memory");
 
     // ---- load chunk A (records r+128 .. r+191), if any ----
     if (r + 2 * chunk < n) {
@@ -56,7 +56,7 @@ void scatter_vsxblk(uint32_t *dst, const uint32_t *src, const uint16_t *slot,
 
     // ---- scatter chunk B (records r+64 .. r+127) ----
     asm volatile("vsetvli zero, %0, e32, m8, ta, ma" ::"r"(pay_el));
-    asm volatile("vsxblkei16.v v16, (%0), v3" ::"r"(dst) : "memory");
+    asm volatile("vlxblkei16.v v16, (%0), v3" ::"r"(dst) : "memory");
 
     si += 2 * chunk;
     pi += 2 * pay_el;

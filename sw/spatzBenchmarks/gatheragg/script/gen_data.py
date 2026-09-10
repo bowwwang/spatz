@@ -66,7 +66,7 @@ def emit(cfg, NB, NROWS, out_dir, seed=42):
     # vlxblk arm: transposed [group][round][unit] (+16 zero padding)
     idx_mem = idx.reshape(NB // UPG, UPG, LP).transpose(0, 2, 1).reshape(-1)
     assert idx_mem[(3 // UPG) * LP * UPG + 5 * UPG + (3 % UPG)] == idx[3, 5]
-    idx_mem = np.concatenate([idx_mem, np.zeros(16, dtype=np.int64)]).astype(np.uint16)
+    idx_mem = np.concatenate([idx_mem, np.zeros(32, dtype=np.int64)]).astype(np.uint16)
 
     # bit-exact emulation of the lane-wise fp32 accumulation
     T64 = T.astype(np.float64)

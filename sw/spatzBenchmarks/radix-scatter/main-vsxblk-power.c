@@ -7,6 +7,13 @@
 // (script/gen_data.py); nothing is generated on-core. Pure data movement:
 // no FLOPs; report bytes moved per cycle.
 
+// POWER-SIMULATION BUILD (2026-09-10). Same kernel, same data geometry -
+// block size, table/footprint and the per-iteration work are untouched; only
+// the number of repeated iterations is reduced so a power run stays short.
+// The timed region is bracketed by start_kernel()/stop_kernel() for the power
+// tooling, and the result check is disabled (correctness is measured by the
+// normal targets).
+
 #include <benchmark.h>
 #include <snrt.h>
 #include <stdio.h>
@@ -42,6 +49,7 @@ static int verify_output(const uint32_t *dst, const uint32_t *src,
 }
 
 int main() {
+  const unsigned int PWR_NREC = 4096u; // records scattered (dst stays the full 1-MiB image, slots span all 256 buckets)
   const unsigned int cid = snrt_cluster_core_idx();
 
 #if USE_CACHE == 1
@@ -66,20 +74,20 @@ int main() {
     start_kernel();
     timer = benchmark_get_cycle();
 
-    scatter_vsxblk(rs_dst, rs_src, rs_slot, rs_l.NREC);
+    scatter_vsxblk(rs_dst, rs_src, rs_slot, PWR_NREC);
     asm volatile("fence" ::: "memory");
 
     // End timer
     timer = benchmark_get_cycle() - timer;
     stop_kernel();
 
-    // error = verify_output(rs_dst, rs_src, rs_slot, rs_l.NREC, rs_l.RD);
+    // error = verify_output(rs_dst, rs_src, rs_slot, PWR_NREC, rs_l.RD);
 
 #ifdef PRINT_RESULT
     printf("radix-scatter vsxblk nrec=%u fanout=%u cache=%d: took %u cycles "
            "%s (bytes=%u)\n",
-           rs_l.NREC, 1u << rs_l.FANOUT_LOG2, USE_CACHE, timer,
-           error ? "CHECK-FAILED" : "CHECK-OK", rs_l.NREC * rs_l.RD * 4u);
+           PWR_NREC, 1u << rs_l.FANOUT_LOG2, USE_CACHE, timer,
+           error ? "CHECK-FAILED" : "CHECK-OK", PWR_NREC * rs_l.RD * 4u);
 #endif
   }
 

@@ -2,40 +2,35 @@
 // Licensed under the Apache License, Version 2.0, see LICENSE for details.
 // SPDX-License-Identifier: Apache-2.0
 
-// attn-vagg (paper row "spattn", sa-gemv), VLXBLK arm v1: top-K sparse
-// attention V aggregation, out[q, :] = sum_k p[q, k] * V[idx[q, k], :] over
-// 256-B fp16 rows (hd = 128 = one e16 m4 register group; FlashInfer
-// page_size = 1 records, Quest-class token selection).
+// attn-vagg (paper row "spattn", sa-gemv), VLXBLK arm v4: top-K sparse
+// attention V aggregation, out[q, :] = sum_k p[q,k] * V[idx[q,k], :] over
+// 256-B fp16 rows.
 //
-// Step = 2 tokens of one query: one 32-B index load (16 ids, the first 2
-// used; ids are row-major, so consecutive tokens are contiguous) drives ONE
-// e16 m8 block gather of the two rows (512 B, blk_len = hd) into a row set;
-// the two scores are broadcast into the two m4 halves of the score group
-// v0-7 (vfmv.v.f); the row set is scaled by the score group at m8 (vfmul),
-// and the two halves are folded into the m4 accumulator v24-27 (two vfadd;
-// step 0 initializes it with one vfadd of the two halves, no zeroing).
+// ONE ROW PER GATHER AT e16 m2. At VLEN = 1024 an e16 m2 group is exactly
+// 128 fp16 = one 256-B V row, so the gather fetches a single block
+// (vsetblklen = hd) and the whole row is one register pair. Each token has
+// its own score, so a wider group would need a per-half score vector -
+// that shape (v1: m8 gather of two rows, m4 adds on the halves) HANGS in
+// this RTL (erratum #7: narrower lane-wise reads of a wider load group's
+// upper registers). Here every group is produced AND consumed at m2
+// through its base register: rows v8-9 / v10-11, accumulator v24-25.
 //
-// Two-round software pipeline: row sets A (v8-15) and B (v16-23)
-// alternate; the next step's index load + gather are issued before the
-// current step's arithmetic. Scores are loaded with flh one step ahead,
-// the hp-fmatmul reference idiom (user ruling 2026-09-09). One 256-B
-// store per query. Index register v28. Requirements: hd == 128, topk even
-// >= 4, idx padded by >= 16 ids.
-//
-// STATUS 2026-09-09: HANGS on the dev tile (attn-vagg-vlxblk-nq2) in RTL -
-// under waveform debug (erratum #7 candidate: the m4 vfadd of the upper
-// half v12 / v20 of the m8 row group). Kept verbatim for that session.
+// INDEX PREFETCHED TWO TOKENS AHEAD (the optimization the user found on
+// gnnagg, worth 26 cycles per gather there): v2/v3 always hold the ids of
+// tokens k+3 / k+4 while the gathers consume k+1 / k+2, so a gather never
+// waits for its own index load. Scores are loaded one token ahead with flh
+// (hp-fmatmul idiom). topk even; the prologue does token 0, the loop does
+// pairs (k, k+1) up to topk-2, and the epilogue adds the last token. The
+// index array is padded (>= 16 ids): the last query prefetches 2 ids past
+// its list.
 
 #include "attn-vlxblk.h"
 
 void attn_vlxblk(__fp16 *out, const __fp16 *pool, const uint16_t *idx,
                  const __fp16 *p, const unsigned int nq,
                  const unsigned int topk, const unsigned int hd) {
-  const unsigned int idx_el = 16u;     // ids per index load (32 B), 2 used
-  const unsigned int half_el = 128u;   // one row = e16 m4
-  const unsigned int pair_el = 256u;   // two rows = e16 m8
-  float s0, s1;                        // scores of the current step
-  float n0, n1;                        // scores of the next step
+  const unsigned int idx_el = 16u; // ids per index load (32 B), 1 used
+  float s, sn;
 
   asm volatile("vsetblklen %0" ::"r"(hd));
 
@@ -43,76 +38,45 @@ void attn_vlxblk(__fp16 *out, const __fp16 *pool, const uint16_t *idx,
     const uint16_t *qi = idx + q * topk;
     const __fp16 *qp = p + q * topk;
 
-    // prologue: step 0 -> A, step 1 -> B; scores of step 0
+    // prologue: ids of tokens 0..1, gathers of tokens 0..1, ids of 2..3
     asm volatile("vsetvli zero, %0, e16, m1, ta, ma" ::"r"(idx_el));
-    asm volatile("vle16.v v28, (%0)" ::"r"(qi) : "memory");
-    asm volatile("vsetvli zero, %0, e16, m8, ta, ma" ::"r"(pair_el));
-    asm volatile("vlxblkei16.v v8, (%0), v28" ::"r"(pool) : "memory");
+    asm volatile("vle16.v v2, (%0)" ::"r"(qi) : "memory");
+    asm volatile("vle16.v v3, (%0)" ::"r"(qi + 1) : "memory");
+    asm volatile("vsetvli zero, %0, e16, m2, ta, ma" ::"r"(hd));
+    asm volatile("vlxblkei16.v v8, (%0), v2" ::"r"(pool) : "memory");
+    asm volatile("vlxblkei16.v v10, (%0), v3" ::"r"(pool) : "memory");
     asm volatile("vsetvli zero, %0, e16, m1, ta, ma" ::"r"(idx_el));
-    asm volatile("vle16.v v28, (%0)" ::"r"(qi + 2) : "memory");
-    asm volatile("vsetvli zero, %0, e16, m8, ta, ma" ::"r"(pair_el));
-    asm volatile("vlxblkei16.v v16, (%0), v28" ::"r"(pool) : "memory");
-    asm volatile("flh %[t], 0(%[a])" : [t] "=f"(s0) : [a] "r"(qp + 0));
-    asm volatile("flh %[t], 0(%[a])" : [t] "=f"(s1) : [a] "r"(qp + 1));
+    asm volatile("vle16.v v2, (%0)" ::"r"(qi + 2) : "memory");
+    asm volatile("vle16.v v3, (%0)" ::"r"(qi + 3) : "memory");
+    asm volatile("flh %[t], 0(%[a])" : [t] "=f"(s) : [a] "r"(qp));
+    asm volatile("flh %[t], 0(%[a])" : [t] "=f"(sn) : [a] "r"(qp + 1));
 
-    // step 0 (set A): scores, scale, acc = lo + hi
-    asm volatile("flh %[t], 0(%[a])" : [t] "=f"(n0) : [a] "r"(qp + 2));
-    asm volatile("flh %[t], 0(%[a])" : [t] "=f"(n1) : [a] "r"(qp + 3));
-    asm volatile("vsetvli zero, %0, e16, m4, ta, ma" ::"r"(half_el));
-    asm volatile("vfmv.v.f v0, %0" ::"f"(s0));
-    asm volatile("vfmv.v.f v4, %0" ::"f"(s1));
-    asm volatile("vsetvli zero, %0, e16, m8, ta, ma" ::"r"(pair_el));
-    asm volatile("vfmul.vv v8, v8, v0");
-    asm volatile("vsetvli zero, %0, e16, m4, ta, ma" ::"r"(half_el));
-    asm volatile("vfadd.vv v24, v8, v12");
-    s0 = n0;
-    s1 = n1;
+    // token 0
+    asm volatile("vsetvli zero, %0, e16, m2, ta, ma" ::"r"(hd));
+    asm volatile("vfmul.vf v24, v8, %0" ::"f"(s));
+    s = sn;
 
-    for (unsigned int k = 2; k < topk; k += 4) {
-      // ---- load A (tokens k+2, k+3), if any; then step k (set B) ----
-      if (k + 2 < topk) {
-        asm volatile("vsetvli zero, %0, e16, m1, ta, ma" ::"r"(idx_el));
-        asm volatile("vle16.v v28, (%0)" ::"r"(qi + k + 2) : "memory");
-        asm volatile("vsetvli zero, %0, e16, m8, ta, ma" ::"r"(pair_el));
-        asm volatile("vlxblkei16.v v8, (%0), v28" ::"r"(pool) : "memory");
-        asm volatile("flh %[t], 0(%[a])" : [t] "=f"(n0) : [a] "r"(qp + k + 2));
-        asm volatile("flh %[t], 0(%[a])" : [t] "=f"(n1) : [a] "r"(qp + k + 3));
-      }
-      asm volatile("vsetvli zero, %0, e16, m4, ta, ma" ::"r"(half_el));
-      asm volatile("vfmv.v.f v0, %0" ::"f"(s0));
-      asm volatile("vfmv.v.f v4, %0" ::"f"(s1));
-      asm volatile("vsetvli zero, %0, e16, m8, ta, ma" ::"r"(pair_el));
-      asm volatile("vfmul.vv v16, v16, v0");
-      asm volatile("vsetvli zero, %0, e16, m4, ta, ma" ::"r"(half_el));
-      asm volatile("vfadd.vv v24, v24, v16");
-      asm volatile("vfadd.vv v24, v24, v20");
-      s0 = n0;
-      s1 = n1;
+    // pairs (k, k+1); at loop entry s = p[k] and v10 holds token k
+    for (unsigned int k = 1; k + 2 < topk; k += 2) {
+      asm volatile("vlxblkei16.v v8, (%0), v2" ::"r"(pool) : "memory");
+      asm volatile("vfmacc.vf v24, %0, v10" ::"f"(s));
+      asm volatile("flh %[t], 0(%[a])" : [t] "=f"(sn) : [a] "r"(qp + k + 1));
+      asm volatile("vsetvli zero, %0, e16, m1, ta, ma" ::"r"(idx_el));
+      asm volatile("vle16.v v2, (%0)" ::"r"(qi + k + 3) : "memory");
+      asm volatile("vsetvli zero, %0, e16, m2, ta, ma" ::"r"(hd));
+      s = sn;
 
-      // ---- load B (tokens k+4, k+5), if any; then step k+2 (set A) ----
-      if (k + 2 < topk) {
-        if (k + 4 < topk) {
-          asm volatile("vsetvli zero, %0, e16, m1, ta, ma" ::"r"(idx_el));
-          asm volatile("vle16.v v28, (%0)" ::"r"(qi + k + 4) : "memory");
-          asm volatile("vsetvli zero, %0, e16, m8, ta, ma" ::"r"(pair_el));
-          asm volatile("vlxblkei16.v v16, (%0), v28" ::"r"(pool) : "memory");
-          asm volatile("flh %[t], 0(%[a])" : [t] "=f"(n0) : [a] "r"(qp + k + 4));
-          asm volatile("flh %[t], 0(%[a])" : [t] "=f"(n1) : [a] "r"(qp + k + 5));
-        }
-        asm volatile("vsetvli zero, %0, e16, m4, ta, ma" ::"r"(half_el));
-        asm volatile("vfmv.v.f v0, %0" ::"f"(s0));
-        asm volatile("vfmv.v.f v4, %0" ::"f"(s1));
-        asm volatile("vsetvli zero, %0, e16, m8, ta, ma" ::"r"(pair_el));
-        asm volatile("vfmul.vv v8, v8, v0");
-        asm volatile("vsetvli zero, %0, e16, m4, ta, ma" ::"r"(half_el));
-        asm volatile("vfadd.vv v24, v24, v8");
-        asm volatile("vfadd.vv v24, v24, v12");
-        s0 = n0;
-        s1 = n1;
-      }
+      asm volatile("vlxblkei16.v v10, (%0), v3" ::"r"(pool) : "memory");
+      asm volatile("vfmacc.vf v24, %0, v8" ::"f"(s));
+      asm volatile("flh %[t], 0(%[a])" : [t] "=f"(sn) : [a] "r"(qp + k + 2));
+      asm volatile("vsetvli zero, %0, e16, m1, ta, ma" ::"r"(idx_el));
+      asm volatile("vle16.v v3, (%0)" ::"r"(qi + k + 4) : "memory");
+      asm volatile("vsetvli zero, %0, e16, m2, ta, ma" ::"r"(hd));
+      s = sn;
     }
 
-    asm volatile("vsetvli zero, %0, e16, m4, ta, ma" ::"r"(half_el));
+    // epilogue: the last token (its row is in v10, its score in s)
+    asm volatile("vfmacc.vf v24, %0, v10" ::"f"(s));
     asm volatile("vse16.v v24, (%0)" ::"r"(out + q * hd) : "memory");
   }
 }

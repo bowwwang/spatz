@@ -140,7 +140,9 @@ def emit(cfg, nc_dom, nc_tile, lst, window, cut2, out_dir, seed=42):
     s += c_array("nb_list", "uint16_t", np.concatenate([plist, np.zeros(64, dtype=np.uint16)]),
                  "{}".format)
     s += "// baseline: expanded per-element u32 indices (cluster*4 + lane)\n"
-    s += c_array("nb_list_exp", "uint32_t", plist_exp, "{}".format, align=128)
+    s += c_array("nb_list_exp", "uint32_t",
+                 np.concatenate([plist_exp, np.zeros(256, dtype=np.uint32)]), "{}".format,
+                 align=128)
     s += "// expected forces fo[c*12 + 3*a + d], fp32 bit patterns (float64 reference)\n"
     s += c_array("nb_expected_bits", "const uint32_t", f32_bits(expected), hex32,
                  data_section=False)
@@ -161,9 +163,11 @@ if __name__ == "__main__":
     p.add_argument("--list", type=int, default=96)
     p.add_argument("--window", type=int, default=256)
     p.add_argument("--cut2", type=float, default=2.0)
+    p.add_argument("--name", default=None, help="config name override (e.g. adh_l1)")
     args = p.parse_args()
     out_dir = pathlib.Path(__file__).parent.parent / "data"
     out_dir.mkdir(exist_ok=True)
     for t in args.nc_tile:
-        cfg = "adh" if t == 256 else "adh_t{}".format(t)
+        cfg = "adh" if (t == 256 and args.nc_dom == 23750) else (
+            args.name or "adh_t{}".format(t))
         emit(cfg, args.nc_dom, t, args.list, args.window, args.cut2, out_dir)

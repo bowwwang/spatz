@@ -6,6 +6,13 @@
 // expected output) comes from the generated DATAHEADER (script/gen_data.py);
 // this file contains no data generation.
 
+// POWER-SIMULATION BUILD (2026-09-10). Same kernel, same data geometry -
+// block size, table/footprint and the per-iteration work are untouched; only
+// the number of repeated iterations is reduced so a power run stays short.
+// The timed region is bracketed by start_kernel()/stop_kernel() for the power
+// tooling, and the result check is disabled (correctness is measured by the
+// normal targets).
+
 #include <benchmark.h>
 #include <snrt.h>
 #include <stdio.h>

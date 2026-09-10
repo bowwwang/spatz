@@ -41,37 +41,31 @@ void agg_vlxblk(float *out, const float *t, const uint16_t *idx,
     // prologue: round 0 -> A, round 1 -> B
     asm volatile("vsetvli zero, %0, e16, m1, ta, ma" ::"r"(idx_el));
     asm volatile("vle16.v v2, (%0)" ::"r"(bi) : "memory");
-    asm volatile("vsetvli zero, %0, e32, m8, ta, ma" ::"r"(ec));
-    asm volatile("vlxblkei16.v v8, (%0), v2" ::"r"(t) : "memory");
-    asm volatile("vsetvli zero, %0, e16, m1, ta, ma" ::"r"(idx_el));
     asm volatile("vle16.v v3, (%0)" ::"r"(bi + upg) : "memory");
     asm volatile("vsetvli zero, %0, e32, m8, ta, ma" ::"r"(ec));
+    asm volatile("vlxblkei16.v v8, (%0), v2" ::"r"(t) : "memory");
     asm volatile("vlxblkei16.v v16, (%0), v3" ::"r"(t) : "memory");
+    // preload
+    asm volatile("vsetvli zero, %0, e16, m1, ta, ma" ::"r"(idx_el));
+    asm volatile("vle16.v v2, (%0)" ::"r"(bi + 2*upg) : "memory");
+    asm volatile("vle16.v v3, (%0)" ::"r"(bi + 3*upg) : "memory");
 
     // acc = round 0
     asm volatile("vfmul.vf v24, v8, %0" ::"f"(fone));
 
     for (unsigned int l = 1; l < lp; l += 2) {
-      // round l is in B, round l+1 (if any) goes to A
-      if (l + 1 < lp) {
-        asm volatile("vsetvli zero, %0, e16, m1, ta, ma" ::"r"(idx_el));
-        asm volatile("vle16.v v2, (%0)" ::"r"(bi + (l + 1) * upg) : "memory");
-        asm volatile("vsetvli zero, %0, e32, m8, ta, ma" ::"r"(ec));
-        asm volatile("vlxblkei16.v v8, (%0), v2" ::"r"(t) : "memory");
-      }
       asm volatile("vsetvli zero, %0, e32, m8, ta, ma" ::"r"(ec));
+      asm volatile("vlxblkei16.v v8, (%0), v2" ::"r"(t) : "memory");
       asm volatile("vfadd.vv v24, v24, v16");
 
-      if (l + 2 < lp) {
-        asm volatile("vsetvli zero, %0, e16, m1, ta, ma" ::"r"(idx_el));
-        asm volatile("vle16.v v3, (%0)" ::"r"(bi + (l + 2) * upg) : "memory");
-        asm volatile("vsetvli zero, %0, e32, m8, ta, ma" ::"r"(ec));
-        asm volatile("vlxblkei16.v v16, (%0), v3" ::"r"(t) : "memory");
-      }
-      if (l + 1 < lp) {
-        asm volatile("vsetvli zero, %0, e32, m8, ta, ma" ::"r"(ec));
-        asm volatile("vfadd.vv v24, v24, v8");
-      }
+      asm volatile("vsetvli zero, %0, e16, m1, ta, ma" ::"r"(idx_el));
+      asm volatile("vle16.v v2, (%0)" ::"r"(bi + (l + 3) * upg) : "memory");
+      asm volatile("vsetvli zero, %0, e32, m8, ta, ma" ::"r"(ec));
+
+      asm volatile("vlxblkei16.v v16, (%0), v3" ::"r"(t) : "memory");
+      asm volatile("vfadd.vv v24, v24, v8");
+      asm volatile("vsetvli zero, %0, e16, m1, ta, ma" ::"r"(idx_el));
+      asm volatile("vle16.v v3, (%0)" ::"r"(bi + (l + 4) * upg) : "memory");
     }
 
     asm volatile("vsetvli zero, %0, e32, m8, ta, ma" ::"r"(ec));

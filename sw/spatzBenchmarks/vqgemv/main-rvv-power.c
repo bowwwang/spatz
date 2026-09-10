@@ -2,16 +2,22 @@
 // Licensed under the Apache License, Version 2.0, see LICENSE for details.
 // SPDX-License-Identifier: Apache-2.0
 
-// vqgemv, VLXBLK arm. ALL data (activations, scales, indices, codebooks,
-// expected output) comes from the generated DATAHEADER (script/gen_data.py);
-// this file contains no data generation.
+// vqgemv, plain-RVV baseline arm. Identical data path to main-vlxblk.c;
+// only the kernel differs.
+
+// POWER-SIMULATION BUILD (2026-09-10). Same kernel, same data geometry -
+// block size, table/footprint and the per-iteration work are untouched; only
+// the number of repeated iterations is reduced so a power run stays short.
+// The timed region is bracketed by start_kernel()/stop_kernel() for the power
+// tooling, and the result check is disabled (correctness is measured by the
+// normal targets).
 
 #include <benchmark.h>
 #include <snrt.h>
 #include <stdio.h>
 
 #include DATAHEADER
-#include "kernel/vqgemv-vlxblk.c"
+#include "kernel/vqgemv-rvv.c"
 
 // Hardware fp16 -> float (the toolchain's software cast is broken).
 static inline float f16_to_f32(const __fp16 *p) {
@@ -76,14 +82,12 @@ int main() {
     start_kernel();
     timer = benchmark_get_cycle();
 
-    if (vq_l.IDX_BYTES == 1) {
-      vqgemv_vlxblk_ei8(vq_c, vq_a, vq_cb0, vq_cb1, (const uint8_t *)vq_idx0,
-                        (const uint8_t *)vq_idx1, vq_scales, vq_l.K, vq_l.N,
-                        vq_l.CB_D);
+    if (vq_l.CB_D == 8) {
+      vqgemv_rvv_d8(vq_c, vq_a, vq_cb0, vq_cb1, (const uint8_t *)vq_idx0,
+                    (const uint8_t *)vq_idx1, vq_scales, vq_l.K, vq_l.N);
     } else {
-      vqgemv_vlxblk_ei16(vq_c, vq_a, vq_cb0, vq_cb1,
-                         (const uint16_t *)vq_idx0, (const uint16_t *)vq_idx1,
-                         vq_scales, vq_l.K, vq_l.N, vq_l.CB_D);
+      vqgemv_rvv_d16(vq_c, vq_a, vq_cb0, vq_cb1, (const uint16_t *)vq_idx0,
+                     (const uint16_t *)vq_idx1, vq_scales, vq_l.K, vq_l.N);
     }
     asm volatile("fence" ::: "memory");
 
@@ -91,10 +95,13 @@ int main() {
     timer = benchmark_get_cycle() - timer;
     stop_kernel();
 
+    // power build: no result check
+
+
     // error = verify_output(vq_c, vq_expected, vq_l.N);
 
 #ifdef PRINT_RESULT
-    printf("vqgemv vlxblk K=%u N=%u CB_D=%u CBN=%u cache=%d: took %u cycles "
+    printf("vqgemv rvv K=%u N=%u CB_D=%u CBN=%u cache=%d: took %u cycles "
            "%s (macs=%u)\n",
            vq_l.K, vq_l.N, vq_l.CB_D, vq_l.CBN, USE_CACHE, timer,
            error ? "CHECK-FAILED" : "CHECK-OK", vq_l.K * vq_l.N);
