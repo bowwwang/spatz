@@ -297,6 +297,10 @@ add_sls(vle main-vle.c fp16_n4096)
 add_sls(vle main-vle.c fp16_n65536)
 # sls-2 (fp32, 128-B rows): L1-resident 128 KiB table and the paper's 2 MiB table
 add_sls(vlxblk32 main-vlxblk32.c fp32_n1024)
+# sls-2 plain-RVV baseline (2026-09-10): one 128-B vle32 per lookup, one load
+# in flight - the shape every large-table baseline that RUNS on this machine uses.
+add_sls(vle32 main-vle32.c fp32_n1024)
+add_sls(vle32 main-vle32.c fp32_n16384)
 # paper-size runs (NB=2048): generate with `--NB 2048 --tag _nb2048`
 add_sls(vlxblk main-vlxblk.c fp16_n65536_nb2048)
 add_sls(vlxblk32 main-vlxblk32.c fp32_n16384_nb2048)
