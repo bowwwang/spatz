@@ -2,9 +2,9 @@
 // Licensed under the Apache License, Version 2.0, see LICENSE for details.
 // SPDX-License-Identifier: Apache-2.0
 
-// nbforce, VLXBLK arm. All data (four X4 field arrays, pair list, expected
-// forces) is literal in the generated DATAHEADER (script/gen_data.py);
-// nothing is generated on-core.
+// nbforce, plain-RVV baseline arm (element-granular vluxei32 from the
+// expanded per-element u32 index array). All data is literal in the
+// generated DATAHEADER (script/gen_data.py); nothing is generated on-core.
 
 // POWER-SIMULATION BUILD (2026-09-10). Same kernel, same data geometry -
 // block size, table/footprint and the per-iteration work are untouched; only
@@ -18,7 +18,7 @@
 #include <stdio.h>
 
 #include DATAHEADER
-#include "kernel/nbforce-vlxblk.c"
+#include "kernel/nbforce-rvv.c"
 
 // fp32 from its bit pattern through an integer load + fmv.w.x (no FPU
 // loads after the kernel's vector traffic).
@@ -29,8 +29,7 @@ static inline float f32_from_bits(const uint32_t bits) {
 }
 
 // Verify ALL NC_TILE x 4 atoms x 3 components against the float64
-// reference from gen_data.py. Tolerance 1% + 0.01 abs: fp32 accumulation
-// over LIST*4 j-atoms in vfredusum tree order, with cutoff clamps.
+// reference from gen_data.py. Tolerance 1% + 0.01 abs.
 static int verify_output(const float *f, const uint32_t *expected_bits,
                          const unsigned int n) {
   const uint32_t *fw = (const uint32_t *)f;
@@ -52,8 +51,9 @@ static int verify_output(const float *f, const uint32_t *expected_bits,
   return fails > 255 ? 255 : (int)fails;
 }
 
+
 int main() {
-  const unsigned int PWR_NC = 2u; // i-clusters (domain stays 23,750 clusters = 1.45 MiB)
+  const unsigned int PWR_NC = 2u; // i-clusters (domain stays 1.45 MiB)
   const unsigned int cid = snrt_cluster_core_idx();
 
 #if USE_CACHE == 1
@@ -74,13 +74,15 @@ int main() {
   unsigned int timer = 0;
 
   if (cid == 0) {
+    const float cut2 = f32_from_bits(nb_l.CUT2_BITS);
+
     // Start timer
     start_kernel();
     timer = benchmark_get_cycle();
 
-    nbforce_vlxblk(nb_f, (const float *)nb_x_bits, (const float *)nb_y_bits,
-                   (const float *)nb_z_bits, (const float *)nb_q_bits, nb_list,
-                   PWR_NC, nb_l.LIST, nb_l.CUT2_BITS);
+    nbforce_rvv(nb_f, (const float *)nb_x_bits, (const float *)nb_y_bits,
+                (const float *)nb_z_bits, (const float *)nb_q_bits, nb_list_exp,
+                PWR_NC, nb_l.LIST, cut2);
     asm volatile("fence" ::: "memory");
 
     // End timer
@@ -90,7 +92,7 @@ int main() {
     // error = verify_output(nb_f, nb_expected_bits, PWR_NC * 12u);
 
 #ifdef PRINT_RESULT
-    printf("nbforce vlxblk nc=%u list=%u cache=%d: took %u cycles %s "
+    printf("nbforce rvv nc=%u list=%u cache=%d: took %u cycles %s "
            "(pairs=%u)\n",
            PWR_NC, nb_l.LIST, USE_CACHE, timer,
            error ? "CHECK-FAILED" : "CHECK-OK", PWR_NC * nb_l.LIST);

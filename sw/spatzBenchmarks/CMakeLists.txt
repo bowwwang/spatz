@@ -271,7 +271,11 @@ add_power(gatheragg-vlxblk-d64  gatheragg/main-vlxblk-power.c      d64_nb2048)
 add_power(gatheragg-vle-d64     gatheragg/main-vle-power.c         d64_nb2048)
 add_power(attn-vagg-vlxblk-nq16 attn-vagg/main-vlxblk-power.c      nq16)
 add_power(attn-vagg-vle-nq16    attn-vagg/main-vle-power.c         nq16)
-# (baselines omitted because they hang: nbforce-rvv, sls-vle; sls-2 has none)
+add_power(nbforce-rvv           nbforce/main-rvv-power.c           adh)
+add_power(sls-vle32-fp32        sls/main-vle32-power.c             fp32_n16384)
+# (omitted because it hangs: sls-vle, the fp16 sls-1 baseline)
+# nbforce power binaries use 2 i-clusters on BOTH arms so the two power runs
+# cover identical work (the materialisation baseline is ~9x slower per cluster).
 
 # isaprobe: instruction-level hang probes (debug aid, not a benchmark)
 add_snitch_test(isaprobe isaprobe/main.c)
