@@ -20,7 +20,10 @@
 # generation): rs_src (record word 0 = key, words 1..3 random payload),
 # rs_srcT (column-major staging of the same payload, baseline arm only:
 # strided vector loads corrupt one lane under misses, erratum #2),
-# rs_slot (u16, +64 zero padding), rs_dst zero. Check (exact, integer):
+# rs_srcT64 (the same staging at u64 grain - two columns of 64-bit record
+# halves - for the vsoxei64 baseline; a strided vle64 of rs_src would hit
+# the same erratum), rs_slot (u16, +64 zero padding), rs_dst zero.
+# Check (exact, integer):
 # rs_dst[rs_slot[r]*RD + d] == rs_src[r*RD + d] for every sampled record
 # (every 4th + the last), so no expected array is needed.
 
@@ -52,6 +55,10 @@ def hex32(x):
     return "0x{:08x}".format(int(x))
 
 
+def hex64(x):
+    return "0x{:016x}".format(int(x))
+
+
 def radix_slots(keys, fanout_log2):
     bucket = (keys >> np.uint32(32 - fanout_log2)).astype(np.int64)
     fanout = 1 << fanout_log2
@@ -77,6 +84,11 @@ def emit(nrec, fanout_log2, out_dir, seed=42):
     src[:, 0] = keys
     src[:, 1:] = rng.integers(0, 1 << 32, size=(nrec, RD - 1), dtype=np.uint64).astype(np.uint32)
     srcT = src.T.reshape(-1)
+    # u64-grain staging: column d holds 64-bit half d of every record
+    # (little-endian: low word first), srcT64[d * nrec + r]
+    src64 = (src[:, 0::2].astype(np.uint64)
+             | (src[:, 1::2].astype(np.uint64) << np.uint64(32)))
+    srcT64 = src64.T.reshape(-1)
 
     # validate the check formula on the full image
     image = np.zeros((nrec, RD), dtype=np.uint32)
@@ -109,6 +121,8 @@ def emit(nrec, fanout_log2, out_dir, seed=42):
                  "{}".format, align=64)
     s += "// column-major staging of the same records (baseline arm only)\n"
     s += c_array("rs_srcT", "uint32_t", srcT, hex32, align=128)
+    s += "// u64-grain column staging (vsoxei64 baseline arm only)\n"
+    s += c_array("rs_srcT64", "uint64_t", srcT64, hex64, align=128)
     path = out_dir / "data_{}.h".format(cfg)
     path.write_text(s)
     print("wrote data_{}.h  (NREC={} RD={} FANOUT={}, dst={} KiB, buckets {}..{} records, header {:.1f} MB)".format(

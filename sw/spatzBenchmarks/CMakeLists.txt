@@ -334,7 +334,13 @@ endmacro()
 # dst); n8192 is the quick development config, n65536 the paper config.
 add_radix(vsxblk n8192)
 add_radix(vsxblk n65536)
+add_radix(vsuxei n8192)
 add_radix(vsuxei n65536)
+# baseline-strength control: e64 grain (2 full-width element transactions
+# per record vs vsuxei's 4 half-width) - vsoxei32 at vtype e64 (mixed EEW;
+# ei64 indexed ops are reserved on RV32), offsets stay the vwmulu u32
+add_radix(vsoxe64 n8192)
+add_radix(vsoxe64 n65536)
 
 # pr-gather: PageRank pull, D=1 x e64 (index-semantics regime point).
 # sp-fmatmul layout: one main per arm (main-vlxblk.c / main-vluxei.c),
